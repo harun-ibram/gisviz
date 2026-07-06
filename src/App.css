@@ -52,6 +52,54 @@
   color: rgba(239, 246, 255, 0.74);
 }
 
+.pill {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 18px;
+  padding: 8px 12px;
+  border: 1px solid rgba(138, 217, 255, 0.32);
+  border-radius: 999px;
+  background: rgba(138, 217, 255, 0.12);
+  color: #8ad9ff;
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.upload-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.upload-card:hover {
+  border-color: rgba(138, 217, 255, 0.48);
+  background: rgba(138, 217, 255, 0.08);
+}
+
+.upload-card input {
+  display: none;
+}
+
+.upload-label {
+  color: #f7fbff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.status-error {
+  margin-top: 12px;
+  color: #ffb4b4;
+  font-size: 0.95rem;
+}
+
 .stage {
   position: relative;
   min-height: 460px;

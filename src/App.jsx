@@ -11,9 +11,11 @@ function App() {
   const splatRef = useRef(null)
   const frameRef = useRef(0)
   const dragStateRef = useRef({ isDragging: false, lastX: 0, lastY: 0 })
+  const cameraRef = useRef(null)
   const [selectedFile, setSelectedFile] = useState(null)
   const [status, setStatus] = useState('Upload a .ply or .splat file to preview it.')
   const [error, setError] = useState('')
+  const [zoom, setZoom] = useState(3.2)
 
   useEffect(() => {
     const stage = stageRef.current
@@ -28,6 +30,7 @@ function App() {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
     camera.position.set(0, 0.35, 3.2)
     camera.lookAt(0, 0, 0)
+    cameraRef.current = camera
 
     const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -226,6 +229,36 @@ function App() {
     setSelectedFile(file)
   }
 
+
+  const handleScroll = (event) => {
+    event.preventDefault()
+
+    const camera = cameraRef.current
+
+    if (!camera) {
+      return
+    }
+
+    setZoom((currentZoom) => {
+      const delta = event.deltaY > 0 ? 0.2 : -0.2
+      const nextZoom = Math.max(0.1, Math.min(8, currentZoom + delta))
+      camera.position.z = nextZoom
+      return nextZoom
+    })
+  }
+
+  const handleZoom = (direction) => {
+    const camera = cameraRef.current
+
+    if (!camera) {
+      return
+    }
+
+    const nextZoom = Math.max(0.1, Math.min(8, zoom + direction * 0.4))
+    camera.position.z = nextZoom
+    setZoom(nextZoom)
+  }
+
   return (
     <main className="app-shell">
       <section className="hero-panel">
@@ -235,15 +268,26 @@ function App() {
           <p className="description">
             Upload a local .ply or .splat file to render it with Spark inside this Vite app.
           </p>
-          <label className="upload-card">
-            <span className="upload-label">Choose splat file</span>
-            <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
-          </label>
+          <div className="controls-row">
+            <label className="upload-card">
+              <span className="upload-label">Choose splat file</span>
+              <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
+            </label>
+            <div className="zoom-controls" aria-label="Zoom controls">
+              <button type="button" className="zoom-button" onClick={() => handleZoom(-1)}>
+                −
+              </button>
+              <span className="zoom-value">{zoom.toFixed(1)}x</span>
+              <button type="button" className="zoom-button" onClick={() => handleZoom(1)}>
+                +
+              </button>
+            </div>
+          </div>
           <p className="pill">{status}</p>
           {error ? <p className="status-error">{error}</p> : null}
         </div>
 
-        <div className="stage" ref={stageRef} aria-label="Spark splat preview" />
+        <div className="stage" ref={stageRef} aria-label="Spark splat preview" onWheel={handleScroll} />
       </section>
     </main>
   )

@@ -66,11 +66,18 @@
   text-transform: uppercase;
 }
 
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 20px;
+}
+
 .upload-card {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  margin-top: 20px;
   padding: 10px 14px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 999px;
@@ -92,6 +99,38 @@
   color: #f7fbff;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.zoom-button {
+  border: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(138, 217, 255, 0.16);
+  color: #f7fbff;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.zoom-button:hover {
+  background: rgba(138, 217, 255, 0.26);
+}
+
+.zoom-value {
+  min-width: 52px;
+  text-align: center;
+  color: #8ad9ff;
+  font-weight: 600;
 }
 
 .status-error {

@@ -10,6 +10,7 @@ function App() {
   const sparkRef = useRef(null)
   const splatRef = useRef(null)
   const frameRef = useRef(0)
+  const dragStateRef = useRef({ isDragging: false, lastX: 0, lastY: 0 })
   const [selectedFile, setSelectedFile] = useState(null)
   const [status, setStatus] = useState('Upload a .ply or .splat file to preview it.')
   const [error, setError] = useState('')
@@ -52,15 +53,57 @@ function App() {
       renderer.setSize(clientWidth, clientHeight, false)
     }
 
+    const handlePointerDown = (event) => {
+      if (event.button !== 0 || !splatRef.current) {
+        return
+      }
+
+      dragStateRef.current.isDragging = true
+      dragStateRef.current.lastX = event.clientX
+      dragStateRef.current.lastY = event.clientY
+      renderer.domElement.setPointerCapture?.(event.pointerId)
+      event.preventDefault()
+    }
+
+    const handlePointerMove = (event) => {
+      const dragState = dragStateRef.current
+
+      if (!dragState.isDragging || !splatRef.current) {
+        return
+      }
+
+      const deltaX = event.clientX - dragState.lastX
+      const deltaY = event.clientY - dragState.lastY
+
+      dragState.lastX = event.clientX
+      dragState.lastY = event.clientY
+
+      if (deltaX !== 0 || deltaY !== 0) {
+        splatRef.current.rotation.y += deltaX * 0.01
+        splatRef.current.rotation.x += deltaY * 0.01
+      }
+    }
+
+    const handlePointerUp = (event) => {
+      if (!dragStateRef.current.isDragging) {
+        return
+      }
+
+      dragStateRef.current.isDragging = false
+      renderer.domElement.releasePointerCapture?.(event.pointerId)
+    }
+
     resizeRenderer()
 
     const resizeObserver = new ResizeObserver(resizeRenderer)
     resizeObserver.observe(stage)
 
+    renderer.domElement.addEventListener('pointerdown', handlePointerDown)
+    renderer.domElement.addEventListener('pointermove', handlePointerMove)
+    renderer.domElement.addEventListener('pointerup', handlePointerUp)
+    renderer.domElement.addEventListener('pointercancel', handlePointerUp)
+
     const render = () => {
-      if (splatRef.current) {
-        splatRef.current.rotation.y += 0.004
-      }
       renderer.render(scene, camera)
       frameRef.current = window.requestAnimationFrame(render)
     }
@@ -74,6 +117,10 @@ function App() {
     return () => {
       window.cancelAnimationFrame(frameRef.current)
       resizeObserver.disconnect()
+      renderer.domElement.removeEventListener('pointerdown', handlePointerDown)
+      renderer.domElement.removeEventListener('pointermove', handlePointerMove)
+      renderer.domElement.removeEventListener('pointerup', handlePointerUp)
+      renderer.domElement.removeEventListener('pointercancel', handlePointerUp)
       if (splatRef.current) {
         scene.remove(splatRef.current)
         splatRef.current.dispose()

@@ -267,7 +267,7 @@ function SplatViewer() {
   return (
     <section className="viewer-panel viewer-panel-splat">
       <div className="copy">
-        <h1>Gaussian splat viewer</h1>
+        <h1>GIS Visualizer</h1>
         <p className="description">Upload a local .ply or .splat file to render it.</p>
 
         <div className="controls-row">

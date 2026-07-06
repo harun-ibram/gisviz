@@ -7,7 +7,7 @@
 }
 
 .hero-panel {
-  width: min(1100px, 100%);
+  width: min(1500px, 100%);
   min-height: min(720px, calc(100svh - 48px));
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
@@ -46,7 +46,7 @@
 
 .description {
   margin-top: 18px;
-  max-width: 34ch;
+  max-width: 40ch;
   font-size: 1.02rem;
   line-height: 1.7;
   color: rgba(239, 246, 255, 0.74);
@@ -54,7 +54,7 @@
 
 .pill {
   display: inline-flex;
-  align-items: center;
+  align-items: bottom;
   margin-top: 18px;
   padding: 8px 12px;
   border: 1px solid rgba(138, 217, 255, 0.32);
@@ -131,6 +131,25 @@
   text-align: center;
   color: #8ad9ff;
   font-weight: 600;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  color: rgba(239, 246, 255, 0.74);
+  font-size: 0.95rem;
+}
+
+.status-row span{
+  font-weight: 600;
+}
+
+.status-row .pill {
+  margin-top: 0;
+  padding: 4px 10px;
+  font-size: 0.85rem;
 }
 
 .status-error {

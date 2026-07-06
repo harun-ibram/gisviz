@@ -13,7 +13,7 @@ function App() {
   const dragStateRef = useRef({ isDragging: false, lastX: 0, lastY: 0 })
   const cameraRef = useRef(null)
   const [selectedFile, setSelectedFile] = useState(null)
-  const [status, setStatus] = useState('Upload a .ply or .splat file to preview it.')
+  const [status, setStatus] = useState('Waiting for file upload')
   const [error, setError] = useState('')
   const [zoom, setZoom] = useState(3.2)
 
@@ -25,7 +25,7 @@ function App() {
     }
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x07111f)
+    scene.background = new THREE.Color(0x07111f)  
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
     camera.position.set(0, 0.35, 3.2)
@@ -158,7 +158,7 @@ function App() {
     const loadSplat = async () => {
       disposeCurrentSplat()
       setError('')
-      setStatus(`Loading ${selectedFile.name}...`)
+      setStatus(`Loading...`)
 
       const extension = selectedFile.name.split('.').pop()?.toLowerCase()
 
@@ -167,7 +167,7 @@ function App() {
           return
         }
         setError('Please choose a .ply or .splat file.')
-        setStatus('Upload a .ply or .splat file to preview it.')
+        setStatus('Upload a file')
         return
       }
 
@@ -200,14 +200,14 @@ function App() {
         splat.rotation.y = 0.25
         scene.add(splat)
         splatRef.current = splat
-        setStatus(`Rendered ${selectedFile.name}`)
+        setStatus(`Rendered`)
       } catch (loadError) {
         if (!active) {
           return
         }
         const message = loadError instanceof Error ? loadError.message : 'Unable to read that file.'
         setError(message)
-        setStatus('Upload a .ply or .splat file to preview it.')
+        setStatus('Upload a file')
       }
     }
 
@@ -263,10 +263,9 @@ function App() {
     <main className="app-shell">
       <section className="hero-panel">
         <div className="copy">
-          <p className="eyebrow">React + Three.js + Spark</p>
           <h1>Gaussian splat viewer</h1>
           <p className="description">
-            Upload a local .ply or .splat file to render it with Spark inside this Vite app.
+            Upload a local .ply or .splat file to render it.
           </p>
           <div className="controls-row">
             <label className="upload-card">
@@ -283,7 +282,10 @@ function App() {
               </button>
             </div>
           </div>
-          <p className="pill">{status}</p>
+          <div className="status-row">
+            <span>Status: </span>
+            <span className="pill">{status}</span>
+          </div>
           {error ? <p className="status-error">{error}</p> : null}
         </div>
 

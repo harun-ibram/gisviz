@@ -7,10 +7,16 @@
 }
 
 .hero-panel {
-  width: min(1220px, 100%);
+  width: min(1600px, 100%);
   display: grid;
-  grid-template-columns: minmax(280px, 0.92fr) minmax(320px, 1fr);
-  gap: 28px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.viewer-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 22px;
   padding: 28px;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 32px;
@@ -19,6 +25,7 @@
     radial-gradient(circle at top left, rgba(138, 217, 255, 0.16), transparent 38%),
     radial-gradient(circle at bottom right, rgba(255, 179, 117, 0.11), transparent 34%);
   box-shadow: 0 28px 90px rgba(0, 0, 0, 0.38);
+  min-height: min(760px, calc(100svh - 48px));
 }
 
 .copy {
@@ -37,7 +44,7 @@
 .copy h1 {
   margin: 0;
   color: #f8fbff;
-  font-size: clamp(2.6rem, 5.5vw, 4.9rem);
+  font-size: clamp(2.4rem, 4.2vw, 4.8rem);
   line-height: 0.94;
   letter-spacing: -0.07em;
 }
@@ -86,6 +93,73 @@
   word-break: break-word;
 }
 
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 20px;
+}
+
+.upload-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.upload-card:hover {
+  border-color: rgba(138, 217, 255, 0.48);
+  background: rgba(138, 217, 255, 0.08);
+}
+
+.upload-card input {
+  display: none;
+}
+
+.upload-label {
+  color: #f7fbff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.zoom-button {
+  border: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(138, 217, 255, 0.16);
+  color: #f7fbff;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.zoom-button:hover {
+  background: rgba(138, 217, 255, 0.26);
+}
+
+.zoom-value {
+  min-width: 52px;
+  text-align: center;
+  color: #8ad9ff;
+  font-weight: 600;
+}
+
 .status-row {
   display: flex;
   flex-wrap: wrap;
@@ -119,11 +193,10 @@
   font-size: 0.95rem;
 }
 
-.map-card {
-  align-self: center;
-  aspect-ratio: 1;
-  width: min(560px, 100%);
-  justify-self: end;
+.map-card,
+.stage-card {
+  align-self: stretch;
+  width: 100%;
   padding: 16px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 30px;
@@ -134,11 +207,37 @@
   overflow: hidden;
 }
 
+.map-card {
+  aspect-ratio: 1;
+}
+
+.stage-card {
+  aspect-ratio: 1;
+}
+
 .map-svg {
   display: block;
   width: 100%;
   height: 100%;
   border-radius: 22px;
+}
+
+.stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 22px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(138, 217, 255, 0.18), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0));
+}
+
+.stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .map-loading {
@@ -152,22 +251,26 @@
   font-size: 0.98rem;
 }
 
+@media (max-width: 1100px) {
+  .hero-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .viewer-panel {
+    min-height: auto;
+  }
+}
+
 @media (max-width: 900px) {
   .app-shell {
     padding: 14px;
   }
 
-  .hero-panel {
-    grid-template-columns: 1fr;
+  .viewer-panel {
     padding: 18px;
   }
 
   .copy {
     padding: 6px 6px 0;
-  }
-
-  .map-card {
-    width: 100%;
-    justify-self: stretch;
   }
 }

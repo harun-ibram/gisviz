@@ -7,7 +7,7 @@
 }
 
 .hero-panel {
-  width: min(1100px, 100%);
+  width: min(1500px, 100%);
   min-height: min(720px, calc(100svh - 48px));
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
@@ -46,10 +46,116 @@
 
 .description {
   margin-top: 18px;
-  max-width: 34ch;
+  max-width: 40ch;
   font-size: 1.02rem;
   line-height: 1.7;
   color: rgba(239, 246, 255, 0.74);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: bottom;
+  margin-top: 18px;
+  padding: 8px 12px;
+  border: 1px solid rgba(138, 217, 255, 0.32);
+  border-radius: 999px;
+  background: rgba(138, 217, 255, 0.12);
+  color: #8ad9ff;
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 20px;
+}
+
+.upload-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.upload-card:hover {
+  border-color: rgba(138, 217, 255, 0.48);
+  background: rgba(138, 217, 255, 0.08);
+}
+
+.upload-card input {
+  display: none;
+}
+
+.upload-label {
+  color: #f7fbff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.zoom-button {
+  border: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(138, 217, 255, 0.16);
+  color: #f7fbff;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.zoom-button:hover {
+  background: rgba(138, 217, 255, 0.26);
+}
+
+.zoom-value {
+  min-width: 52px;
+  text-align: center;
+  color: #8ad9ff;
+  font-weight: 600;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  color: rgba(239, 246, 255, 0.74);
+  font-size: 0.95rem;
+}
+
+.status-row span{
+  font-weight: 600;
+}
+
+.status-row .pill {
+  margin-top: 0;
+  padding: 4px 10px;
+  font-size: 0.85rem;
+}
+
+.status-error {
+  margin-top: 12px;
+  color: #ffb4b4;
+  font-size: 0.95rem;
 }
 
 .stage {

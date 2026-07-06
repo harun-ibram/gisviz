@@ -1,295 +1,411 @@
-import { useEffect, useRef, useState } from 'react'
-import * as THREE from 'three'
-import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
+import { useMemo } from 'react'
+import mapOsmText from '../data/map.osm?raw'
 import './App.css'
 
-function App() {
-  const stageRef = useRef(null)
-  const sceneRef = useRef(null)
-  const rendererRef = useRef(null)
-  const sparkRef = useRef(null)
-  const splatRef = useRef(null)
-  const frameRef = useRef(0)
-  const dragStateRef = useRef({ isDragging: false, lastX: 0, lastY: 0 })
-  const cameraRef = useRef(null)
-  const [selectedFile, setSelectedFile] = useState(null)
-  const [status, setStatus] = useState('Waiting for file upload')
-  const [error, setError] = useState('')
-  const [zoom, setZoom] = useState(3.2)
+const svgSize = 1000
+const svgPadding = 74
 
-  useEffect(() => {
-    const stage = stageRef.current
+const interestingNodeTags = ['name', 'amenity', 'tourism', 'historic', 'shop', 'office', 'entrance', 'highway', 'barrier', 'railway', 'man_made', 'leisure']
 
-    if (!stage) {
-      return undefined
+const getTagValue = (tags, keys) => {
+  for (const key of keys) {
+    if (tags[key]) {
+      return tags[key]
     }
-
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x07111f)  
-
-    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
-    camera.position.set(0, 0.35, 3.2)
-    camera.lookAt(0, 0, 0)
-    cameraRef.current = camera
-
-    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.setClearColor(0x000000, 0)
-    renderer.outputColorSpace = THREE.SRGBColorSpace
-    stage.appendChild(renderer.domElement)
-
-    const spark = new SparkRenderer({ renderer })
-    scene.add(spark)
-
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.25)
-    const keyLight = new THREE.DirectionalLight(0xffffff, 2.6)
-    keyLight.position.set(2.5, 2.5, 4)
-    const rimLight = new THREE.PointLight(0xff8f42, 18, 14)
-    rimLight.position.set(-2.8, -1.4, 3.2)
-
-    scene.add(ambientLight, keyLight, rimLight)
-
-    const resizeRenderer = () => {
-      const { clientWidth, clientHeight } = stage
-      camera.aspect = clientWidth / clientHeight
-      camera.updateProjectionMatrix()
-      renderer.setSize(clientWidth, clientHeight, false)
-    }
-
-    const handlePointerDown = (event) => {
-      if (event.button !== 0 || !splatRef.current) {
-        return
-      }
-
-      dragStateRef.current.isDragging = true
-      dragStateRef.current.lastX = event.clientX
-      dragStateRef.current.lastY = event.clientY
-      renderer.domElement.setPointerCapture?.(event.pointerId)
-      event.preventDefault()
-    }
-
-    const handlePointerMove = (event) => {
-      const dragState = dragStateRef.current
-
-      if (!dragState.isDragging || !splatRef.current) {
-        return
-      }
-
-      const deltaX = event.clientX - dragState.lastX
-      const deltaY = event.clientY - dragState.lastY
-
-      dragState.lastX = event.clientX
-      dragState.lastY = event.clientY
-
-      if (deltaX !== 0 || deltaY !== 0) {
-        splatRef.current.rotation.y += deltaX * 0.01
-        splatRef.current.rotation.x += deltaY * 0.01
-      }
-    }
-
-    const handlePointerUp = (event) => {
-      if (!dragStateRef.current.isDragging) {
-        return
-      }
-
-      dragStateRef.current.isDragging = false
-      renderer.domElement.releasePointerCapture?.(event.pointerId)
-    }
-
-    resizeRenderer()
-
-    const resizeObserver = new ResizeObserver(resizeRenderer)
-    resizeObserver.observe(stage)
-
-    renderer.domElement.addEventListener('pointerdown', handlePointerDown)
-    renderer.domElement.addEventListener('pointermove', handlePointerMove)
-    renderer.domElement.addEventListener('pointerup', handlePointerUp)
-    renderer.domElement.addEventListener('pointercancel', handlePointerUp)
-
-    const render = () => {
-      renderer.render(scene, camera)
-      frameRef.current = window.requestAnimationFrame(render)
-    }
-
-    render()
-
-    sceneRef.current = scene
-    rendererRef.current = renderer
-    sparkRef.current = spark
-
-    return () => {
-      window.cancelAnimationFrame(frameRef.current)
-      resizeObserver.disconnect()
-      renderer.domElement.removeEventListener('pointerdown', handlePointerDown)
-      renderer.domElement.removeEventListener('pointermove', handlePointerMove)
-      renderer.domElement.removeEventListener('pointerup', handlePointerUp)
-      renderer.domElement.removeEventListener('pointercancel', handlePointerUp)
-      if (splatRef.current) {
-        scene.remove(splatRef.current)
-        splatRef.current.dispose()
-        splatRef.current = null
-      }
-      spark.dispose()
-      renderer.dispose()
-      if (renderer.domElement.parentNode === stage) {
-        stage.removeChild(renderer.domElement)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    const scene = sceneRef.current
-    const renderer = rendererRef.current
-
-    if (!selectedFile || !scene || !renderer) {
-      return undefined
-    }
-
-    let active = true
-
-    const disposeCurrentSplat = () => {
-      if (splatRef.current) {
-        scene.remove(splatRef.current)
-        splatRef.current.dispose()
-        splatRef.current = null
-      }
-    }
-
-    const loadSplat = async () => {
-      disposeCurrentSplat()
-      setError('')
-      setStatus(`Loading...`)
-
-      const extension = selectedFile.name.split('.').pop()?.toLowerCase()
-
-      if (extension !== 'ply' && extension !== 'splat') {
-        if (!active) {
-          return
-        }
-        setError('Please choose a .ply or .splat file.')
-        setStatus('Upload a file')
-        return
-      }
-
-      try {
-        const arrayBuffer = await selectedFile.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuffer)
-        const fileType = extension === 'ply' ? 'ply' : 'splat'
-
-        const splat = new SplatMesh({
-          fileBytes: bytes,
-          fileType,
-          fileName: selectedFile.name,
-          onProgress: (event) => {
-            if (!active) {
-              return
-            }
-            setStatus(`Loading ${selectedFile.name} (${Math.round((event.loaded / Math.max(event.total, 1)) * 100)}%)`)
-          },
-        })
-
-        await splat.initialized
-
-        if (!active) {
-          splat.dispose()
-          return
-        }
-
-        splat.position.set(0, -0.08, -1.3)
-        splat.scale.setScalar(0.9)
-        splat.rotation.y = 0.25
-        scene.add(splat)
-        splatRef.current = splat
-        setStatus(`Rendered`)
-      } catch (loadError) {
-        if (!active) {
-          return
-        }
-        const message = loadError instanceof Error ? loadError.message : 'Unable to read that file.'
-        setError(message)
-        setStatus('Upload a file')
-      }
-    }
-
-    loadSplat()
-
-    return () => {
-      active = false
-      disposeCurrentSplat()
-    }
-  }, [selectedFile])
-
-  const handleFileChange = (event) => {
-    const file = event.target.files?.[0]
-
-    if (!file) {
-      return
-    }
-
-    setSelectedFile(file)
   }
 
+  return ''
+}
 
-  const handleScroll = (event) => {
-    event.preventDefault()
+const parseTags = (element) => {
+  const tags = {}
 
-    const camera = cameraRef.current
+  element.querySelectorAll('tag').forEach((tagElement) => {
+    const key = tagElement.getAttribute('k')
+    const value = tagElement.getAttribute('v')
 
-    if (!camera) {
+    if (key && value) {
+      tags[key] = value
+    }
+  })
+
+  return tags
+}
+
+const parseOsm = (xmlText) => {
+  const parser = new DOMParser()
+  const xml = parser.parseFromString(xmlText, 'application/xml')
+  const parserError = xml.querySelector('parsererror')
+
+  if (parserError) {
+    throw new Error('Unable to parse map.osm')
+  }
+
+  const boundsElement = xml.querySelector('bounds')
+  const bounds = boundsElement
+    ? {
+        minLat: Number(boundsElement.getAttribute('minlat')),
+        minLon: Number(boundsElement.getAttribute('minlon')),
+        maxLat: Number(boundsElement.getAttribute('maxlat')),
+        maxLon: Number(boundsElement.getAttribute('maxlon')),
+      }
+    : null
+
+  const nodes = new Map()
+
+  xml.querySelectorAll('node').forEach((nodeElement) => {
+    const id = nodeElement.getAttribute('id')
+    const lat = Number(nodeElement.getAttribute('lat'))
+    const lon = Number(nodeElement.getAttribute('lon'))
+
+    if (!id || Number.isNaN(lat) || Number.isNaN(lon)) {
       return
     }
 
-    setZoom((currentZoom) => {
-      const delta = event.deltaY > 0 ? 0.2 : -0.2
-      const nextZoom = Math.max(0.1, Math.min(8, currentZoom + delta))
-      camera.position.z = nextZoom
-      return nextZoom
+    nodes.set(id, {
+      id,
+      lat,
+      lon,
+      tags: parseTags(nodeElement),
     })
-  }
+  })
 
-  const handleZoom = (direction) => {
-    const camera = cameraRef.current
+  const ways = []
 
-    if (!camera) {
+  xml.querySelectorAll('way').forEach((wayElement) => {
+    const id = wayElement.getAttribute('id')
+
+    if (!id) {
       return
     }
 
-    const nextZoom = Math.max(0.1, Math.min(8, zoom + direction * 0.4))
-    camera.position.z = nextZoom
-    setZoom(nextZoom)
+    const refs = Array.from(wayElement.querySelectorAll('nd'))
+      .map((ndElement) => ndElement.getAttribute('ref'))
+      .filter(Boolean)
+
+    if (refs.length < 2) {
+      return
+    }
+
+    ways.push({
+      id,
+      refs,
+      tags: parseTags(wayElement),
+    })
+  })
+
+  const derivedBounds = bounds ?? (() => {
+    const nodeValues = Array.from(nodes.values())
+
+    return nodeValues.reduce(
+      (accumulator, node) => ({
+        minLat: Math.min(accumulator.minLat, node.lat),
+        minLon: Math.min(accumulator.minLon, node.lon),
+        maxLat: Math.max(accumulator.maxLat, node.lat),
+        maxLon: Math.max(accumulator.maxLon, node.lon),
+      }),
+      {
+        minLat: Number.POSITIVE_INFINITY,
+        minLon: Number.POSITIVE_INFINITY,
+        maxLat: Number.NEGATIVE_INFINITY,
+        maxLon: Number.NEGATIVE_INFINITY,
+      },
+    )
+  })()
+
+  return {
+    bounds: derivedBounds,
+    nodes,
+    ways,
   }
+}
+
+const makeProjector = (bounds) => {
+  const latSpan = Math.max(bounds.maxLat - bounds.minLat, 0.000001)
+  const lonSpan = Math.max(bounds.maxLon - bounds.minLon, 0.000001)
+  const innerSize = svgSize - svgPadding * 2
+
+  return (lat, lon) => ({
+    x: svgPadding + ((lon - bounds.minLon) / lonSpan) * innerSize,
+    y: svgSize - svgPadding - ((lat - bounds.minLat) / latSpan) * innerSize,
+  })
+}
+
+const getWayStyle = (tags) => {
+  if (tags.highway) {
+    const road = tags.highway
+
+    if (road === 'motorway' || road === 'trunk') {
+      return { stroke: '#ffd36f', strokeWidth: 14 }
+    }
+
+    if (road === 'primary' || road === 'secondary') {
+      return { stroke: '#f2c89a', strokeWidth: 10 }
+    }
+
+    if (road === 'tertiary' || road === 'residential' || road === 'unclassified') {
+      return { stroke: '#fff8ea', strokeWidth: 6 }
+    }
+
+    return { stroke: '#f6e8d4', strokeWidth: 4 }
+  }
+
+  if (tags.railway) {
+    return { stroke: '#9fb2cf', strokeWidth: 3, dashArray: '12 10' }
+  }
+
+  if (tags.waterway || tags.natural === 'water') {
+    return { stroke: '#4f9df0', strokeWidth: 4, fill: '#4f9df022' }
+  }
+
+  if (tags.building) {
+    return { stroke: '#445264', strokeWidth: 1.4, fill: '#5d6a7f88' }
+  }
+
+  if (tags.landuse || tags.leisure) {
+    return { stroke: '#8ea37f', strokeWidth: 1.2, fill: '#6f9c5d33' }
+  }
+
+  return { stroke: '#aab6c7', strokeWidth: 1.5 }
+}
+
+const getNodeLabel = (tags) => {
+  const label = getTagValue(tags, ['name', 'amenity', 'tourism', 'historic', 'shop', 'office', 'entrance', 'highway', 'barrier'])
+
+  if (!label) {
+    return ''
+  }
+
+  return label.replaceAll(';', ' · ')
+}
+
+const nodePriority = (tags) => {
+  if (tags.name) return 5
+  if (tags.amenity || tags.tourism || tags.historic) return 4
+  if (tags.shop || tags.office || tags.leisure) return 3
+  if (tags.entrance || tags.highway || tags.barrier) return 2
+  return 1
+}
+
+const mapParseResult = (() => {
+  if (typeof DOMParser === 'undefined') {
+    return {
+      data: null,
+      error: 'Unable to parse map.osm outside the browser',
+      status: 'Map unavailable',
+    }
+  }
+
+  try {
+    const data = parseOsm(mapOsmText)
+
+    return {
+      data,
+      error: '',
+      status: `Loaded ${data.nodes.size.toLocaleString()} nodes and ${data.ways.length.toLocaleString()} ways`,
+    }
+  } catch (parseError) {
+    const message = parseError instanceof Error ? parseError.message : 'Unable to read map.osm'
+
+    return {
+      data: null,
+      error: message,
+      status: 'Map unavailable',
+    }
+  }
+})()
+
+function App() {
+  const mapData = mapParseResult.data
+  const status = mapParseResult.status
+  const error = mapParseResult.error
+
+  const mapView = useMemo(() => {
+    if (!mapData) {
+      return null
+    }
+
+    const project = makeProjector(mapData.bounds)
+    const renderedWays = []
+    const renderedAreas = []
+
+    for (const way of mapData.ways) {
+      const points = way.refs
+        .map((ref) => mapData.nodes.get(ref))
+        .filter(Boolean)
+        .map((node) => ({
+          ...node,
+          ...project(node.lat, node.lon),
+        }))
+
+      if (points.length < 2) {
+        continue
+      }
+
+      const closed = way.refs[0] === way.refs[way.refs.length - 1] && points.length > 2
+      const style = getWayStyle(way.tags)
+      const isArea = Boolean(way.tags.building || way.tags.landuse || way.tags.leisure || way.tags.natural === 'water')
+      const isBuilding = Boolean(way.tags.building)
+      const pointsAttribute = points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')
+
+      if (closed && isArea) {
+        renderedAreas.push({ id: way.id, pointsAttribute, style, isBuilding })
+      } else {
+        renderedWays.push({ id: way.id, pointsAttribute, style })
+      }
+    }
+
+    const nodeMarkers = Array.from(mapData.nodes.values())
+      .filter((node) => getNodeLabel(node.tags) || interestingNodeTags.some((tag) => node.tags[tag]))
+      .sort((left, right) => nodePriority(right.tags) - nodePriority(left.tags))
+      .slice(0, 24)
+      .map((node) => ({
+        ...node,
+        label: getNodeLabel(node.tags),
+        ...project(node.lat, node.lon),
+      }))
+
+    return {
+      renderedAreas,
+      renderedWays,
+      nodeMarkers,
+    }
+  }, [mapData])
+
+  const boundsLabel = mapData
+    ? `${mapData.bounds.minLat.toFixed(3)}, ${mapData.bounds.minLon.toFixed(3)} → ${mapData.bounds.maxLat.toFixed(3)}, ${mapData.bounds.maxLon.toFixed(3)}`
+    : ''
+
+  const nodeCount = mapData?.nodes.size ?? 0
+  const wayCount = mapData?.ways.length ?? 0
 
   return (
     <main className="app-shell">
       <section className="hero-panel">
         <div className="copy">
-          <h1>Gaussian splat viewer</h1>
+          <p className="eyebrow">data/map.osm</p>
+          <h1>Mini map square</h1>
           <p className="description">
-            Upload a local .ply or .splat file to render it.
           </p>
-          <div className="controls-row">
-            <label className="upload-card">
-              <span className="upload-label">Choose splat file</span>
-              <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
-            </label>
-            <div className="zoom-controls" aria-label="Zoom controls">
-              <button type="button" className="zoom-button" onClick={() => handleZoom(-1)}>
-                −
-              </button>
-              <span className="zoom-value">{zoom.toFixed(1)}x</span>
-              <button type="button" className="zoom-button" onClick={() => handleZoom(1)}>
-                +
-              </button>
+
+          <div className="meta-grid">
+            <div className="meta-card">
+              <span className="meta-label">Nodes</span>
+              <strong>{nodeCount.toLocaleString()}</strong>
+            </div>
+            <div className="meta-card">
+              <span className="meta-label">Ways</span>
+              <strong>{wayCount.toLocaleString()}</strong>
+            </div>
+            <div className="meta-card meta-card-wide">
+              <span className="meta-label">Bounds</span>
+              <strong>{boundsLabel || 'Loading bounds...'}</strong>
             </div>
           </div>
+
           <div className="status-row">
-            <span>Status: </span>
+            <span>Status:</span>
             <span className="pill">{status}</span>
           </div>
+
           {error ? <p className="status-error">{error}</p> : null}
         </div>
 
-        <div className="stage" ref={stageRef} aria-label="Spark splat preview" onWheel={handleScroll} />
+        <div className="map-card" aria-label="Map preview">
+          {mapData && mapView ? (
+            <svg className="map-svg" viewBox={`0 0 ${svgSize} ${svgSize}`} role="img" aria-label="Miniature map based on map.osm">
+              <defs>
+                <linearGradient id="mapBackground" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#f3e8d3" />
+                  <stop offset="100%" stopColor="#dcc9ac" />
+                </linearGradient>
+                <radialGradient id="glow" cx="50%" cy="38%" r="60%">
+                  <stop offset="0%" stopColor="#fff8e3" stopOpacity="0.95" />
+                  <stop offset="100%" stopColor="#fff8e3" stopOpacity="0" />
+                </radialGradient>
+                <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feDropShadow dx="0" dy="10" stdDeviation="16" floodColor="#1f2430" floodOpacity="0.28" />
+                </filter>
+              </defs>
+
+              <rect x="0" y="0" width={svgSize} height={svgSize} fill="url(#mapBackground)" />
+              <rect x="0" y="0" width={svgSize} height={svgSize} fill="url(#glow)" opacity="0.48" />
+
+              {Array.from({ length: 7 }, (_, index) => {
+                const position = svgPadding + ((svgSize - svgPadding * 2) / 6) * index
+
+                return (
+                  <g key={`grid-${index}`} opacity="0.18">
+                    <line x1={position} y1={svgPadding * 0.5} x2={position} y2={svgSize - svgPadding * 0.5} stroke="#7d8aa0" strokeDasharray="10 12" strokeWidth="1.4" />
+                    <line x1={svgPadding * 0.5} y1={position} x2={svgSize - svgPadding * 0.5} y2={position} stroke="#7d8aa0" strokeDasharray="10 12" strokeWidth="1.4" />
+                  </g>
+                )
+              })}
+
+              {mapView.renderedAreas.filter((area) => area.isBuilding).map((area) => (
+                <polygon
+                  key={`${area.id}-outline`}
+                  points={area.pointsAttribute}
+                  fill="none"
+                  stroke="#cc0a0a"
+                  strokeWidth={area.style.strokeWidth + 5}
+                  strokeLinejoin="round"
+                  opacity="0.45"
+                />
+              ))}
+
+              {mapView.renderedAreas.map((area) => (
+                <polygon
+                  key={area.id}
+                  points={area.pointsAttribute}
+                  fill={area.style.fill ?? 'rgba(136, 111, 0, 0.2)'}
+                  stroke={area.style.stroke}
+                  strokeWidth={area.style.strokeWidth}
+                  strokeLinejoin="round"
+                  opacity="1"
+                />
+              ))}
+
+              {mapView.renderedWays.map((way) => (
+                <polyline
+                  key={way.id}
+                  points={way.pointsAttribute}
+                  fill="none"
+                  stroke={way.style.stroke}
+                  strokeWidth={way.style.strokeWidth}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={way.style.dashArray}
+                  opacity="0.95"
+                />
+              ))}
+
+              {mapView.nodeMarkers.map((node) => (
+                <g key={node.id} filter="url(#softShadow)">
+                  <circle cx={node.x} cy={node.y} r="11" fill="#1b2432" opacity="0.9" />
+                  <circle cx={node.x} cy={node.y} r="5.5" fill={node.label ? '#ff9b5e' : '#8ad9ff'} />
+                  {node.label ? (
+                    <>
+                      <text x={node.x + 18} y={node.y - 12} fill="#1f2836" fontSize="22" fontWeight="700" paintOrder="stroke" stroke="#f6ecd7" strokeWidth="6" strokeLinejoin="round">
+                        {node.label}
+                      </text>
+                      <text x={node.x + 18} y={node.y - 12} fill="#2d3848" fontSize="22" fontWeight="700">
+                        {node.label}
+                      </text>
+                    </>
+                  ) : null}
+                </g>
+              ))}
+
+              <rect x={svgPadding - 16} y={svgPadding - 16} width={svgSize - (svgPadding - 16) * 2} height={svgSize - (svgPadding - 16) * 2} fill="none" stroke="#5e6d82" strokeOpacity="0.5" strokeWidth="2" />
+              <text x={svgPadding} y={svgSize - 34} fill="#243041" fontSize="24" fontWeight="700">
+                map.osm
+              </text>
+            </svg>
+          ) : (
+            <div className="map-loading">Building the map square...</div>
+          )}
+        </div>
       </section>
     </main>
   )

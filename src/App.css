@@ -6,11 +6,14 @@
   box-sizing: border-box;
 }
 
+
+
 .hero-panel {
   width: min(1600px, 100%);
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 24px;
+  height: min(800px, 100svh);
 }
 
 .viewer-panel {
@@ -193,8 +196,8 @@
   font-size: 0.95rem;
 }
 
-.map-card,
 .stage-card {
+  position: relative;
   align-self: stretch;
   width: 100%;
   padding: 16px;
@@ -213,6 +216,24 @@
 
 .stage-card {
   aspect-ratio: 1;
+}
+
+.map-card-overlay {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: min(300px, 34%);
+  aspect-ratio: auto;
+  margin: 0;
+  padding: 12px;
+  z-index: 2;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.map-card-overlay .map-svg,
+.map-card-overlay .map-loading {
+  border-radius: 18px;
 }
 
 .map-svg {
@@ -258,6 +279,10 @@
 
   .viewer-panel {
     min-height: auto;
+  }
+
+  .map-card-overlay {
+    width: min(300px, 42%);
   }
 }
 

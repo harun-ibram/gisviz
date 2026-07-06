@@ -214,7 +214,7 @@ const mapParseResult = (() => {
   }
 })()
 
-function OSMViewer() {
+function OSMViewer({ className = 'map-card' } = {}) {
   const mapData = mapParseResult.data
   const status = mapParseResult.status
   const error = mapParseResult.error
@@ -279,36 +279,8 @@ function OSMViewer() {
   const wayCount = mapData?.ways.length ?? 0
 
   return (
-    <section className="viewer-panel viewer-panel-map">
-      <div className="copy">
-        <p className="eyebrow">outline branch</p>
-        <h1>Mini map square</h1>
-        <p className="description">A minimap extracted from the local OSM data.</p>
 
-        <div className="meta-grid">
-          <div className="meta-card">
-            <span className="meta-label">Nodes</span>
-            <strong>{nodeCount.toLocaleString()}</strong>
-          </div>
-          <div className="meta-card">
-            <span className="meta-label">Ways</span>
-            <strong>{wayCount.toLocaleString()}</strong>
-          </div>
-          <div className="meta-card meta-card-wide">
-            <span className="meta-label">Bounds</span>
-            <strong>{boundsLabel || 'Loading bounds...'}</strong>
-          </div>
-        </div>
-
-        <div className="status-row">
-          <span>Status:</span>
-          <span className="pill">{status}</span>
-        </div>
-
-        {error ? <p className="status-error">{error}</p> : null}
-      </div>
-
-      <div className="map-card" aria-label="Map preview">
+      <div className={className} aria-label="Map preview">
         {mapData && mapView ? (
           <svg className="map-svg" viewBox={`0 0 ${svgSize} ${svgSize}`} role="img" aria-label="Miniature map based on map.osm">
             <defs>
@@ -403,7 +375,6 @@ function OSMViewer() {
           <div className="map-loading">Building the map square...</div>
         )}
       </div>
-    </section>
   )
 }
 

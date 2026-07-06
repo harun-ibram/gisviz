@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
+import OSMViewer from './OSMViewer.jsx'
 
 function SplatViewer() {
   const stageRef = useRef(null)
@@ -266,7 +267,6 @@ function SplatViewer() {
   return (
     <section className="viewer-panel viewer-panel-splat">
       <div className="copy">
-        <p className="eyebrow">spark_ branch</p>
         <h1>Gaussian splat viewer</h1>
         <p className="description">Upload a local .ply or .splat file to render it.</p>
 
@@ -296,7 +296,9 @@ function SplatViewer() {
 
       <div className="stage-card" aria-label="Spark splat preview" onWheel={handleScroll}>
         <div className="stage" ref={stageRef} />
+        <OSMViewer className="map-card map-card-overlay" />
       </div>
+
     </section>
   )
 }

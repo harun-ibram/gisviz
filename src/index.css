@@ -1,11 +1,12 @@
 :root {
   color-scheme: dark;
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Trebuchet MS', 'Verdana', 'Segoe UI', sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: rgba(239, 246, 255, 0.92);
+  color: rgba(239, 246, 255, 0.94);
   background:
-    radial-gradient(circle at top, rgba(138, 217, 255, 0.08), transparent 30%),
+    radial-gradient(circle at top, rgba(138, 217, 255, 0.08), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(255, 179, 117, 0.08), transparent 24%),
     linear-gradient(180deg, #060b14 0%, #02050b 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;

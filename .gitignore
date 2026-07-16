@@ -33,4 +33,5 @@ data_output
 .env
 docker-compose.yaml
 init-scripts
+scripts/
 scripts/*

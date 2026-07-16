@@ -33,6 +33,7 @@ class OSMNode(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
+    model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
 
 
 class OSMWay(SQLModel, table=True):

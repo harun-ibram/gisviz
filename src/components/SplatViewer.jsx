@@ -272,7 +272,7 @@ function SplatViewer() {
 
         <div className="controls-row">
           <label className="upload-card">
-            <span className="upload-label">Choose splat file</span>
+            <span className="upload-label">🗋 Choose splat file</span>
             <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
           </label>
           <div className="zoom-controls" aria-label="Zoom controls">

@@ -35,3 +35,9 @@ docker-compose.yaml
 init-scripts
 scripts/
 scripts/*
+backend/bin
+backend/include
+backend/lib
+backend/lib64
+backend/share
+backend/pyvenv.cfg

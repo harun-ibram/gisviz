@@ -109,3 +109,4 @@ class Region(SQLModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
     geom: Any = Field(sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=False))
+    model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))

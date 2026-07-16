@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+src/server/__pycache__
 
 # Editor directories and files
 .vscode/*
@@ -27,3 +28,8 @@ dist-ssr
 # Data folders
 data
 data_output
+
+# Environment files
+.env
+docker-compose.yaml
+init-scripts

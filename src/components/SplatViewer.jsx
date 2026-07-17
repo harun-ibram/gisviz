@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import * as THREE from 'three'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
 import OSMViewer from './OSMViewer.jsx'
+import { toPublicUrl } from '../utils.jsx'
 
 function SplatViewer() {
+  const location = useLocation()
   const stageRef = useRef(null)
   const sceneRef = useRef(null)
   const rendererRef = useRef(null)
@@ -13,9 +16,66 @@ function SplatViewer() {
   const dragStateRef = useRef({ isDragging: false, lastX: 0, lastY: 0 })
   const cameraRef = useRef(null)
   const [selectedFile, setSelectedFile] = useState(null)
+  const [remoteSource, setRemoteSource] = useState(null) // { url, name }
   const [status, setStatus] = useState('Waiting for file upload')
   const [error, setError] = useState('')
   const [zoom, setZoom] = useState(3.2)
+
+  // Pick up a model path passed via navigation state (e.g. from Home)
+  useEffect(() => {
+    const modelPath = location.state?.modelPath
+
+    if (!modelPath) {
+      return undefined
+    }
+
+    let active = true
+
+    const buildFileFromPath = async () => {
+      setError('')
+      setStatus('Loading...')
+
+      const url = toPublicUrl(modelPath)
+      console.log('[SplatViewer] fetching model from:', url)
+
+      try {
+        const response = await fetch(url)
+
+        console.log('[SplatViewer] fetch response:', response.status, response.url)
+
+        if (!response.ok) {
+          throw new Error(`Unable to fetch ${url} (${response.status})`)
+        }
+
+        const blob = await response.blob()
+        console.log('[SplatViewer] blob size:', blob.size, 'type:', blob.type)
+
+        const name = location.state?.name ?? modelPath.split('/').pop()
+        const file = new File([blob], name, { type: blob.type })
+
+        if (!active) {
+          return
+        }
+
+        setSelectedFile(file)
+      } catch (fetchError) {
+        if (!active) {
+          return
+        }
+
+        const message = fetchError instanceof Error ? fetchError.message : 'Unable to load that file.'
+        console.error('[SplatViewer] load error:', message)
+        setError(message)
+        setStatus('Upload a file')
+      }
+    }
+
+    buildFileFromPath()
+
+    return () => {
+      active = false
+    }
+  }, [location.state])
 
   useEffect(() => {
     const stage = stageRef.current
@@ -144,7 +204,14 @@ function SplatViewer() {
     const scene = sceneRef.current
     const renderer = rendererRef.current
 
-    if (!selectedFile || !scene || !renderer) {
+    // Local file takes precedence if both are somehow set
+    const source = selectedFile
+      ? { kind: 'file', file: selectedFile }
+      : remoteSource
+        ? { kind: 'url', url: remoteSource.url, name: remoteSource.name }
+        : null
+
+    if (!source || !scene || !renderer) {
       return undefined
     }
 
@@ -163,7 +230,8 @@ function SplatViewer() {
       setError('')
       setStatus('Loading...')
 
-      const extension = selectedFile.name.split('.').pop()?.toLowerCase()
+      const fileName = source.kind === 'file' ? source.file.name : source.name
+      const extension = fileName?.split('.').pop()?.toLowerCase()
 
       if (extension !== 'ply' && extension !== 'splat') {
         if (!active) {
@@ -176,20 +244,34 @@ function SplatViewer() {
       }
 
       try {
-        const arrayBuffer = await selectedFile.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuffer)
+        let bytes
+
+        if (source.kind === 'file') {
+          const arrayBuffer = await source.file.arrayBuffer()
+          bytes = new Uint8Array(arrayBuffer)
+        } else {
+          const response = await fetch(toPublicUrl(source.url))
+
+          if (!response.ok) {
+            throw new Error(`Unable to fetch ${fileName} (${response.status})`)
+          }
+
+          const arrayBuffer = await response.arrayBuffer()
+          bytes = new Uint8Array(arrayBuffer)
+        }
+
         const fileType = extension === 'ply' ? 'ply' : 'splat'
 
         const splat = new SplatMesh({
           fileBytes: bytes,
           fileType,
-          fileName: selectedFile.name,
+          fileName,
           onProgress: (event) => {
             if (!active) {
               return
             }
 
-            setStatus(`Loading ${selectedFile.name} (${Math.round((event.loaded / Math.max(event.total, 1)) * 100)}%)`)
+            setStatus(`Loading ${fileName} (${Math.round((event.loaded / Math.max(event.total, 1)) * 100)}%)`)
           },
         })
 
@@ -211,7 +293,7 @@ function SplatViewer() {
           return
         }
 
-        const message = loadError instanceof Error ? loadError.message : 'Unable to read that file.'
+        const message = loadError instanceof Error ? loadError.message : 'Unable to load that file.'
         setError(message)
         setStatus('Upload a file')
       }
@@ -223,7 +305,7 @@ function SplatViewer() {
       active = false
       disposeCurrentSplat()
     }
-  }, [selectedFile])
+  }, [selectedFile, remoteSource])
 
   const handleFileChange = (event) => {
     const file = event.target.files?.[0]
@@ -232,6 +314,7 @@ function SplatViewer() {
       return
     }
 
+    setRemoteSource(null) // clear any route-provided source
     setSelectedFile(file)
   }
 

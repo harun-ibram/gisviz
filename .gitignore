@@ -42,3 +42,4 @@ backend/lib64
 backend/share
 backend/pyvenv.cfg
 splats/
+backend/pyvenv.cfg

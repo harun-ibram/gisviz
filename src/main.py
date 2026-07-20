@@ -22,6 +22,15 @@ import pg8000
 
 import sqlalchemy
 
+import base64
+import json
+from google.oauth2 import service_account
+
+def get_gcp_credentials():
+    b64 = os.environ["GOOGLE_CREDENTIALS_B64"]
+    info = json.loads(base64.b64decode(b64))
+    return service_account.Credentials.from_service_account_info(info)
+
 
 def connect_with_connector() -> sqlalchemy.engine.base.Engine:
     """
@@ -44,7 +53,10 @@ def connect_with_connector() -> sqlalchemy.engine.base.Engine:
     ip_type = IPTypes.PRIVATE if os.environ.get("PRIVATE_IP") else IPTypes.PUBLIC
 
     # initialize Cloud SQL Python Connector object
-    connector = Connector(refresh_strategy="LAZY")
+    connector = Connector(
+        refresh_strategy="LAZY",
+        credentials=get_gcp_credentials(),
+    )
 
     def getconn() -> pg8000.dbapi.Connection:
         conn: pg8000.dbapi.Connection = connector.connect(

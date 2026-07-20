@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, select
 
-from database import get_session
 from models import (
     OSMNode,
     OSMRelation,

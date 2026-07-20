@@ -1,5 +1,4 @@
 import { useMemo } from 'react'
-import mapOsmText from '../../data/map.osm?raw'
 
 const svgSize = 1000
 const svgPadding = 74
@@ -196,7 +195,7 @@ const mapParseResult = (() => {
   }
 
   try {
-    const data = parseOsm(mapOsmText)
+    const data = parseOsm("")
 
     return {
       data,

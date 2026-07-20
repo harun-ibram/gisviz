@@ -60,7 +60,7 @@ def connect_with_connector() -> sqlalchemy.engine.base.Engine:
     # The Cloud SQL Python Connector can be used with SQLAlchemy
     # using the 'creator' argument to 'create_engine'
     pool = sqlalchemy.create_engine(
-        "postgresql+pg8000://",
+        os.environ["DATABASE_URL"],
         creator=getconn,
         # ...
     )

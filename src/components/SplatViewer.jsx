@@ -1,9 +1,8 @@
-  import { useEffect, useRef, useState } from 'react'
-  import { useLocation } from 'react-router-dom'
-  import * as THREE from 'three'
-  import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
-  import OSMViewer from './OSMViewer.jsx'
-  import { toPublicUrl } from '../utils.jsx'
+import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
+import * as THREE from 'three'
+import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
+import OSMViewer from './OSMViewer.jsx'
 
   function SplatViewer() {
     const location = useLocation()
@@ -22,60 +21,53 @@
     const [zoom, setZoom] = useState(3.2)
 
     // Pick up a model path passed via navigation state (e.g. from Home)
-    useEffect(() => {
-      const modelPath = location.state?.modelPath
+    const API_URL = import.meta.env.VITE_API_URL
 
-      if (!modelPath) {
-        return undefined
-      }
+  useEffect(() => {
+    const modelPath = location.state?.modelPath
 
-      let active = true
+    if (!modelPath) {
+      return undefined
+    }
 
-      const buildFileFromPath = async () => {
-        setError('')
-        setStatus('Loading...')
+    let active = true
 
-        const url = toPublicUrl(modelPath)
-        console.log('[SplatViewer] fetching model from:', url)
+    const fetchSplatUrl = async () => {
+      setError('')
+      setStatus('Loading...')
 
-        try {
-          const response = await fetch(url, { cache: 'no-store' })
+      try {
+        const res = await fetch(`${API_URL}/splat-url?path=${encodeURIComponent(modelPath)}`)
 
-          console.log('[SplatViewer] fetch response:', response.status, response.url)
-
-          if (!response.ok) {
-            throw new Error(`Unable to fetch ${url} (${response.status})`)
-          }
-
-          const blob = await response.blob()
-          console.log('[SplatViewer] blob size:', blob.size, 'type:', blob.type)
-
-          const name = modelPath.split('/').pop()
-          const file = new File([blob], name, { type: blob.type })
-
-          if (!active) {
-            return
-          }
-
-          setSelectedFile(file)
-        } catch (fetchError) {
-          if (!active) {
-            return
-          }
-
-          const message = fetchError instanceof Error ? fetchError.message : 'Unable to load that file.'
-          console.error('[SplatViewer] load error:', message)
-          setError(message)
-          setStatus('Upload a file')
+        if (!res.ok) {
+          throw new Error(`Unable to fetch splat URL (${res.status})`)
         }
-      }
 
-      buildFileFromPath()
+        const data = await res.json()
 
-      return () => {
-        active = false
+        if (!active) {
+          return
+        }
+
+        setRemoteSource({ url: data.url, name: data.filename })
+      } catch (fetchError) {
+        if (!active) {
+          return
+        }
+
+        const message = fetchError instanceof Error ? fetchError.message : 'Unable to load that file.'
+        console.error('[SplatViewer] load error:', message)
+        setError(message)
+        setStatus('Upload a file')
       }
-    }, [location.state])
+    }
+
+    fetchSplatUrl()
+
+    return () => {
+      active = false
+    }
+  }, [location.state])
 
     useEffect(() => {
       const stage = stageRef.current
@@ -250,7 +242,7 @@
             const arrayBuffer = await source.file.arrayBuffer()
             bytes = new Uint8Array(arrayBuffer)
           } else {
-            const response = await fetch(toPublicUrl(source.url), { cache: "no-store" })
+            const response = await fetch(source.url, { cache: "no-store" })
 
             if (!response.ok) {
               throw new Error(`Unable to fetch ${fileName} (${response.status})`)

@@ -5,7 +5,6 @@ import SplatViewer from './components/SplatViewer.jsx'
 import Home from './components/Home.jsx'
 
 function App() {
-    document.title = "GIS Viz"
     return (
         <BrowserRouter>
             <main className="app-shell">

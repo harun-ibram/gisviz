@@ -36,6 +36,36 @@
   padding: 10px;
 }
 
+.copy-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.copy-title {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.details-box--compact {
+  flex: 0 1 300px;
+  min-width: 240px;
+  min-height: 0;
+  gap: 10px;
+  padding: 18px 20px;
+  border-radius: 22px;
+}
+
+.details-box--compact .details-grid {
+  gap: 6px;
+}
+
+.details-box--compact .details-row {
+  padding: 8px 0;
+}
+
 .eyebrow {
   margin: 0 0 12px;
   color: rgba(239, 246, 255, 0.62);
@@ -200,6 +230,7 @@
   position: relative;
   align-self: stretch;
   width: 100%;
+  min-height: 320px;
   padding: 16px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 30px;
@@ -211,10 +242,6 @@
 }
 
 .map-card {
-  aspect-ratio: 1;
-}
-
-.stage-card {
   aspect-ratio: 1;
 }
 

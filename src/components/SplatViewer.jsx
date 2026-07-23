@@ -362,38 +362,42 @@ import OSMViewer from './OSMViewer.jsx'
     return (
       <section className="viewer-panel viewer-panel-splat">
         <div className="copy">
-          <p className="eyebrow">Visualizer</p>
-          <h1>{viewerTitle}</h1>
-          <p className="description">Upload a local .ply or .splat file to render it.</p>
-
-          <div className="details-box details-box--viewer">
-            <div className="subtitle subtitle--home">
-              <span>Loaded Splat</span>
-              <span className="subtitle-count">{currentFileName ? '1' : '0'}</span>
+          <div className="copy-header">
+            <div className="copy-title">
+              <p className="eyebrow">Visualizer</p>
+              <h1>{viewerTitle}</h1>
+              <p className="description">Upload a local .ply or .splat file to render it.</p>
             </div>
 
-            {currentFileName ? (
-              <dl className="details-grid">
-                <div className="details-row">
-                  <dt>Name</dt>
-                  <dd>{viewerTitle}</dd>
-                </div>
-                <div className="details-row">
-                  <dt>Source</dt>
-                  <dd>{sourceLabel}</dd>
-                </div>
-                <div className="details-row">
-                  <dt>Format</dt>
-                  <dd>{currentFileExtension ? `.${currentFileExtension}` : 'Unknown'}</dd>
-                </div>
-                <div className="details-row">
-                  <dt>Status</dt>
-                  <dd>{status}</dd>
-                </div>
-              </dl>
-            ) : (
-              <p className="details-empty">Load a splat to see its details here.</p>
-            )}
+            <div className="details-box details-box--viewer details-box--compact">
+              <div className="subtitle subtitle--home">
+                <span>Loaded Splat</span>
+                <span className="subtitle-count">{currentFileName ? '1' : '0'}</span>
+              </div>
+
+              {currentFileName ? (
+                <dl className="details-grid">
+                  <div className="details-row">
+                    <dt>Name</dt>
+                    <dd>{viewerTitle}</dd>
+                  </div>
+                  <div className="details-row">
+                    <dt>Source</dt>
+                    <dd>{sourceLabel}</dd>
+                  </div>
+                  <div className="details-row">
+                    <dt>Format</dt>
+                    <dd>{currentFileExtension ? `.${currentFileExtension}` : 'Unknown'}</dd>
+                  </div>
+                  <div className="details-row">
+                    <dt>Status</dt>
+                    <dd>{status}</dd>
+                  </div>
+                </dl>
+              ) : (
+                <p className="details-empty">Load a splat to see its details here.</p>
+              )}
+            </div>
           </div>
 
           <div className="controls-row">

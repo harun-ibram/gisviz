@@ -306,7 +306,7 @@
   grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.72fr) auto;
   gap: 24px;
   align-items: stretch;
-  width: min(1100px, 100%);
+  width: min(1600px, 100%);
 }
 
 .list-box {
@@ -453,6 +453,7 @@
 .subtitle--home {
   padding-bottom: 4px;
 }
+
 
 .details-box {
   display: flex;

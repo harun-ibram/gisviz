@@ -45,7 +45,7 @@ def get_signed_url(path: str) -> str:
         "get_object",
         Params={"Bucket": os.environ["R2_BUCKET_NAME"], "Key": path},
         ExpiresIn=3600
-    )
+)
 
 
 
@@ -116,7 +116,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://gisviz-xi.vercel.app"],
+    allow_origins=["http://localhost:5173", "https://gisviz.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"]
 )

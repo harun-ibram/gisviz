@@ -1,6 +1,6 @@
 import json
 from typing import Annotated, Any
- 
+import os
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
@@ -9,7 +9,6 @@ from sqlmodel import Session, SQLModel, select
 import boto3
 from botocore.config import Config
 
-from database import get_session
 from models import (
     OSMNode,
     OSMRelation,

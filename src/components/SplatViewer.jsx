@@ -412,10 +412,7 @@ import OSMViewer from './OSMViewer.jsx'
                     <dt>Format</dt>
                     <dd>{currentFileExtension ? `.${currentFileExtension}` : 'Unknown'}</dd>
                   </div>
-                  <div className="details-row">
-                    <dt>Status</dt>
-                    <dd>{status}</dd>
-                  </div>
+                  
                 </dl>
               ) : (
                 <p className="details-empty">Load a splat to see its details here.</p>

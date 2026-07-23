@@ -5,6 +5,10 @@
   import OSMViewer from './OSMViewer.jsx'
   import { toPublicUrl } from '../utils.jsx'
 
+    const getFileName = (path) => path?.split('/').pop() ?? ''
+
+    const getFileExtension = (fileName) => fileName?.split('.').pop()?.toLowerCase() ?? ''
+
   function SplatViewer() {
     const location = useLocation()
     const stageRef = useRef(null)
@@ -20,6 +24,22 @@
     const [status, setStatus] = useState('Waiting for file upload')
     const [error, setError] = useState('')
     const [zoom, setZoom] = useState(3.2)
+    const routeSplatName = location.state?.name ?? getFileName(location.state?.modelPath)
+    const selectedSplatName = selectedFile?.name ?? remoteSource?.name ?? routeSplatName
+    const viewerTitle = selectedSplatName ?? 'Visualizer'
+    const currentFileName = selectedFile?.name ?? remoteSource?.name ?? getFileName(location.state?.modelPath)
+    const currentFileExtension = getFileExtension(currentFileName)
+    const sourceLabel = selectedFile
+      ? 'Local upload'
+      : location.state?.modelPath
+        ? 'Loaded from library'
+        : remoteSource
+          ? 'Remote source'
+          : 'No file loaded'
+
+    useEffect(() => {
+      document.title = 'Visualizer'
+    }, [])
 
     // Pick up a model path passed via navigation state (e.g. from Home)
     useEffect(() => {
@@ -50,7 +70,7 @@
           const blob = await response.blob()
           console.log('[SplatViewer] blob size:', blob.size, 'type:', blob.type)
 
-          const name = modelPath.split('/').pop()
+          const name = getFileName(modelPath)
           const file = new File([blob], name, { type: blob.type })
 
           if (!active) {
@@ -231,7 +251,7 @@
         setStatus('Loading...')
 
         const fileName = source.kind === 'file' ? source.file.name : source.name
-        const extension = fileName?.split('.').pop()?.toLowerCase()
+        const extension = getFileExtension(fileName)
 
         if (extension !== 'ply' && extension !== 'splat') {
           if (!active) {
@@ -294,7 +314,6 @@
           }
 
           const message = loadError instanceof Error ? loadError.message : 'Unable to load that file.'
-          console.log("We're cooked D:")
           setError(message)
           setStatus('Upload a file')
         }
@@ -351,8 +370,39 @@
     return (
       <section className="viewer-panel viewer-panel-splat">
         <div className="copy">
-          <h1>GIS Visualizer</h1>
+          <p className="eyebrow">Visualizer</p>
+          <h1>{viewerTitle}</h1>
           <p className="description">Upload a local .ply or .splat file to render it.</p>
+
+          <div className="details-box details-box--viewer">
+            <div className="subtitle subtitle--home">
+              <span>Loaded Splat</span>
+              <span className="subtitle-count">{currentFileName ? '1' : '0'}</span>
+            </div>
+
+            {currentFileName ? (
+              <dl className="details-grid">
+                <div className="details-row">
+                  <dt>Name</dt>
+                  <dd>{viewerTitle}</dd>
+                </div>
+                <div className="details-row">
+                  <dt>Source</dt>
+                  <dd>{sourceLabel}</dd>
+                </div>
+                <div className="details-row">
+                  <dt>Format</dt>
+                  <dd>{currentFileExtension ? `.${currentFileExtension}` : 'Unknown'}</dd>
+                </div>
+                <div className="details-row">
+                  <dt>Status</dt>
+                  <dd>{status}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="details-empty">Load a splat to see its details here.</p>
+            )}
+          </div>
 
           <div className="controls-row">
             <label className="upload-card">

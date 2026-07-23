@@ -25,7 +25,7 @@ function Header() {
                 <NavLink to="/viewer" className={navLinkClass}>Visualizer</NavLink>
             </nav>
             <div className="gv-header-meta">
-                <span className="text-muted gv-dataset-label">Timișoara dataset</span>
+                
                 <span className="tag tag-accent">{nodes.length + regions.length} splats</span>
             </div>
         </header>

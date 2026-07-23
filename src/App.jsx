@@ -5,6 +5,7 @@ import Home from './components/Home.jsx'
 import { SplatLibraryProvider } from './hooks/SplatLibraryProvider.jsx'
 import { useSplatLibrary } from './hooks/useSplatLibrary.js'
 import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion } from './components/icons.jsx'
+import { Analytics } from '@vercel/analytics/react'
 
 const navLinkClass = ({ isActive }) => `gv-nav-link${isActive ? ' gv-nav-link--active' : ''}`
 const sideLinkClass = ({ isActive }) => `gv-side${isActive ? ' gv-side--active' : ''}`
@@ -88,6 +89,7 @@ function App() {
                         </main>
                     </div>
                 </div>
+                <Analytics />
             </SplatLibraryProvider>
         </BrowserRouter>
     )

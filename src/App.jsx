@@ -65,7 +65,7 @@ function Sidebar() {
                 <div className="gv-backend-title">Backend</div>
                 <div className="gv-backend-status">
                     <span className="gv-pulse-dot" />
-                    Connected · {apiBaseUrl}
+                    Connected
                 </div>
             </div>
         </aside>

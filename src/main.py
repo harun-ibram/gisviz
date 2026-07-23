@@ -1,7 +1,7 @@
 import json
 from typing import Annotated, Any
  
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, select
@@ -129,6 +129,11 @@ def _row_to_dict(obj: SQLModel, geojson: str | None) -> dict[str, Any]:
     return data
 
 
+
+@app.get("/splat-url")
+async def get_splat_url(path: str = Query(...)):
+    return {"url": get_signed_url(path), "filename": path.split("/")[-1]}
+
 # API endpoints
 @app.get("/nodes")
 async def get_nodes(session: SessionDep):
@@ -168,11 +173,14 @@ async def get_node_model_path(node_id: int, session: SessionDep):
         .where(OSMNode.node_id == node_id)
     ).first()
 
-    if node:
-        return {"model_path": node.model_path,
-                "url": get_signed_url(node.model_path),
-                "filename": node.model_path.split("/")[-1]}
-    return {"error": "Node not found"}
+    if not node or not node.model_path:
+        return {"error": "Node not found"}
+
+    return {
+        "model_path": node.model_path,
+        "url": get_signed_url(node.model_path),
+        "filename": node.model_path.split("/")[-1],
+    }
     
 @app.get("/regions")
 async def get_regions(session: SessionDep):

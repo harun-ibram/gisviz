@@ -367,6 +367,29 @@ import OSMViewer from './OSMViewer.jsx'
               <p className="eyebrow">Visualizer</p>
               <h1>{viewerTitle}</h1>
               <p className="description">Upload a local .ply or .splat file to render it.</p>
+
+              <div className="controls-row">
+                <label className="upload-card">
+                  <span className="upload-label">🗋 Choose splat file</span>
+                  <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
+                </label>
+                <div className="zoom-controls" aria-label="Zoom controls">
+                  <button type="button" className="zoom-button" onClick={() => handleZoom(-1)}>
+                    −
+                  </button>
+                  <span className="zoom-value">{zoom.toFixed(1)}x</span>
+                  <button type="button" className="zoom-button" onClick={() => handleZoom(1)}>
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <div className="status-row">
+                <span>Status:</span>
+                <span className="pill">{status}</span>
+              </div>
+
+              {error ? <p className="status-error">{error}</p> : null}
             </div>
 
             <div className="details-box details-box--viewer details-box--compact">
@@ -399,29 +422,6 @@ import OSMViewer from './OSMViewer.jsx'
               )}
             </div>
           </div>
-
-          <div className="controls-row">
-            <label className="upload-card">
-              <span className="upload-label">🗋 Choose splat file</span>
-              <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
-            </label>
-            <div className="zoom-controls" aria-label="Zoom controls">
-              <button type="button" className="zoom-button" onClick={() => handleZoom(-1)}>
-                −
-              </button>
-              <span className="zoom-value">{zoom.toFixed(1)}x</span>
-              <button type="button" className="zoom-button" onClick={() => handleZoom(1)}>
-                +
-              </button>
-            </div>
-          </div>
-
-          <div className="status-row">
-            <span>Status:</span>
-            <span className="pill">{status}</span>
-          </div>
-
-          {error ? <p className="status-error">{error}</p> : null}
         </div>
 
         <div className="stage-card" aria-label="Spark splat preview" onWheel={handleScroll}>

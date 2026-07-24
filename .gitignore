@@ -33,8 +33,8 @@ data_output
 .env
 docker-compose.yaml
 init-scripts
-scripts/
-scripts/*
+scripts/schema.sql
+scripts/gis/__pycache__
 backend/bin
 backend/include
 backend/lib
@@ -44,3 +44,7 @@ backend/pyvenv.cfg
 splats/
 backend/pyvenv.cfg
 key.json
+src/__pycache__
+public/output_hh.tif
+USGS_LPC_PA_17County_D24_18STK297416.laz
+Proiect GIS.pdf

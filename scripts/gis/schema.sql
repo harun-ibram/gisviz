@@ -103,6 +103,24 @@ CREATE TABLE public.regions (
 CREATE INDEX idx_regions_geom ON public.regions USING GIST (geom);
 CREATE INDEX idx_regions_properties ON public.regions USING GIN (properties);
 
+-- Splat-generation jobs: photos -> COLMAP + Gaussian splatting (on a serverless
+-- GPU) -> .ply in R2 -> written back to the target's model_path. Kept in sync
+-- with the Job SQLModel in src/models.py.
+CREATE TABLE public.jobs (
+    id            TEXT PRIMARY KEY,                       -- uuid
+    status        TEXT NOT NULL DEFAULT 'pending',        -- pending|processing|done|failed
+    target_type   TEXT NOT NULL,                          -- 'node' | 'region'
+    target_id     TEXT NOT NULL,                          -- osm.nodes.node_id (as text) or public.regions.id
+    input_prefix  TEXT NOT NULL,                          -- R2 key prefix holding uploaded photos
+    output_key    TEXT,                                   -- R2 key of the produced splat, once done
+    modal_call_id TEXT,                                   -- Modal function-call id for the running job
+    error         TEXT,                                   -- failure detail when status='failed'
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_jobs_status ON public.jobs (status);
+
 -- ============================================================================
 -- GEOMETRY-BUILDING FUNCTIONS
 -- Called by the loader after bulk-inserting nodes/way_nodes/relation_members.

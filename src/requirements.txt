@@ -6,3 +6,4 @@ pg8000==1.31.5
 cloud-sql-python-connector[pg8000]==1.20.4
 python-dotenv==1.2.2
 boto3==1.43.54
+modal==1.5.3

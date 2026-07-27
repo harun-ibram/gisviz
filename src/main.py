@@ -1,12 +1,16 @@
 import json
+import uuid
+from datetime import datetime, timezone
 from typing import Annotated, Any
- 
-from fastapi import Depends, FastAPI, Query
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, select
 
 from models import (
+    Job,
     OSMNode,
     OSMRelation,
     OSMRelationMember,
@@ -46,6 +50,15 @@ def get_signed_url(path: str) -> str:
         Params={"Bucket": os.environ["R2_BUCKET_NAME"], "Key": path},
         ExpiresIn=3600
 )
+
+
+def get_upload_url(path: str) -> str:
+    """Presigned PUT URL so a client can upload a photo straight to R2."""
+    return r2_client.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": os.environ["R2_BUCKET_NAME"], "Key": path},
+        ExpiresIn=3600,
+    )
 
 
 
@@ -226,4 +239,126 @@ async def get_region_model_path(id: int, session: SessionDep):
             "url": get_signed_url(region.model_path),
             "filename": region.model_path.split("/")[-1]
     }
-    
+
+
+# ---------------------------------------------------------------------------
+# Splat ingestion: photos -> COLMAP + Gaussian splatting (on Modal) -> R2.
+# See gpu/splat_app.py for the GPU worker and Plan.md for the full flow.
+# ---------------------------------------------------------------------------
+
+class CreateJobRequest(BaseModel):
+    target_type: str          # "node" | "region"
+    target_id: str            # OSMNode.node_id (as str) or Region.id
+    filenames: list[str]      # photo filenames the client will upload
+
+
+class WebhookRequest(BaseModel):
+    status: str               # "done" | "failed"
+    output_key: str | None = None
+    error: str | None = None
+
+
+@app.post("/jobs")
+async def create_job(body: CreateJobRequest, session: SessionDep):
+    """Create a job and hand back presigned PUT URLs to upload the photos to R2."""
+    if body.target_type not in ("node", "region"):
+        raise HTTPException(status_code=400, detail="target_type must be 'node' or 'region'")
+    if not body.filenames:
+        raise HTTPException(status_code=400, detail="filenames must not be empty")
+
+    job_id = str(uuid.uuid4())
+    input_prefix = f"inputs/{job_id}/"
+
+    job = Job(
+        id=job_id,
+        status="pending",
+        target_type=body.target_type,
+        target_id=body.target_id,
+        input_prefix=input_prefix,
+    )
+    session.add(job)
+    session.commit()
+
+    upload_urls = {
+        name: get_upload_url(f"{input_prefix}{name}") for name in body.filenames
+    }
+    return {"job_id": job_id, "input_prefix": input_prefix, "upload_urls": upload_urls}
+
+
+@app.post("/jobs/{job_id}/start")
+async def start_job(job_id: str, session: SessionDep):
+    """Kick off the GPU job on Modal once the photos have been uploaded."""
+    import modal  # lazy import: keep the API importable even if modal is absent
+
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == "processing":
+        return {"job_id": job_id, "status": job.status}
+
+    output_key = f"models/{job_id}/scene.ply"
+    backend_url = os.environ["BACKEND_PUBLIC_URL"].rstrip("/")
+    webhook_url = f"{backend_url}/jobs/{job_id}/webhook"
+
+    process = modal.Function.from_name("gisviz-splat", "process")
+    call = process.spawn(job_id, job.input_prefix, output_key, webhook_url)
+
+    job.output_key = output_key
+    job.modal_call_id = getattr(call, "object_id", None)
+    job.status = "processing"
+    job.updated_at = datetime.now(timezone.utc)
+    session.add(job)
+    session.commit()
+    return {"job_id": job_id, "status": job.status}
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str, session: SessionDep):
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "target_type": job.target_type,
+        "target_id": job.target_id,
+        "output_key": job.output_key,
+        "error": job.error,
+    }
+
+
+@app.post("/jobs/{job_id}/webhook")
+async def job_webhook(
+    job_id: str,
+    body: WebhookRequest,
+    session: SessionDep,
+    x_webhook_secret: Annotated[str | None, Header()] = None,
+):
+    """Called by the Modal worker on completion. Secret-verified before trust."""
+    if x_webhook_secret != os.environ["JOB_WEBHOOK_SECRET"]:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if body.status == "done":
+        output_key = body.output_key or job.output_key
+        if job.target_type == "node":
+            target = session.get(OSMNode, int(job.target_id))
+        else:
+            target = session.get(Region, job.target_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="Target feature not found")
+        target.model_path = output_key
+        session.add(target)
+        job.output_key = output_key
+        job.status = "done"
+    else:
+        job.status = "failed"
+        job.error = body.error
+
+    job.updated_at = datetime.now(timezone.utc)
+    session.add(job)
+    session.commit()
+    return {"job_id": job.id, "status": job.status}

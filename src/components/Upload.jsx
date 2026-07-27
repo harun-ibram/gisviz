@@ -5,6 +5,50 @@ import { IconArrowRight, IconClose, IconNode, IconRegion, IconSearch, IconUpload
 
 const POLL_INTERVAL_MS = 3000
 
+// Uploading every file at once (one PUT per file, all in parallel) overwhelms
+// the browser's connection pool/upload bandwidth once there are dozens of
+// photos, and R2 resets the stalled connections instead of erroring cleanly.
+// Cap how many PUTs are in flight at a time and work through the rest as a
+// queue.
+const UPLOAD_CONCURRENCY = 6
+
+async function uploadFilesInBatches(files, uploadUrls, onProgress) {
+    let nextIndex = 0
+    let completed = 0
+
+    const uploadOne = async (file) => {
+        const uploadUrl = uploadUrls?.[file.name]
+
+        if (!uploadUrl) {
+            throw new Error(`No upload URL was issued for ${file.name}`)
+        }
+
+        const uploadResponse = await fetch(uploadUrl, {
+            method: 'PUT',
+            body: file,
+            headers: { 'Content-Type': file.type },
+        })
+
+        if (!uploadResponse.ok) {
+            throw new Error(`Upload failed for ${file.name} (${uploadResponse.status})`)
+        }
+
+        completed += 1
+        onProgress?.(completed, files.length)
+    }
+
+    const worker = async () => {
+        while (nextIndex < files.length) {
+            const file = files[nextIndex]
+            nextIndex += 1
+            await uploadOne(file)
+        }
+    }
+
+    const workerCount = Math.min(UPLOAD_CONCURRENCY, files.length)
+    await Promise.all(Array.from({ length: workerCount }, worker))
+}
+
 const formatBytes = (bytes) => {
     if (bytes < 1024) {
         return `${bytes} B`
@@ -241,25 +285,11 @@ function Upload() {
 
             const { job_id: jobId, upload_urls: uploadUrls } = await jobResponse.json()
 
-            setStatus(`Uploading ${files.length} photo${files.length === 1 ? '' : 's'}…`)
+            setStatus(`Uploading photo 0/${files.length}…`)
 
-            await Promise.all(files.map(async (file) => {
-                const uploadUrl = uploadUrls?.[file.name]
-
-                if (!uploadUrl) {
-                    throw new Error(`No upload URL was issued for ${file.name}`)
-                }
-
-                const uploadResponse = await fetch(uploadUrl, {
-                    method: 'PUT',
-                    body: file,
-                    headers: { 'Content-Type': file.type },
-                })
-
-                if (!uploadResponse.ok) {
-                    throw new Error(`Upload failed for ${file.name} (${uploadResponse.status})`)
-                }
-            }))
+            await uploadFilesInBatches(files, uploadUrls, (done, total) => {
+                setStatus(`Uploading photo ${done}/${total}…`)
+            })
 
             setStatus('Starting job…')
 

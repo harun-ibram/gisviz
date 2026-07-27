@@ -86,7 +86,7 @@ def _post_webhook(webhook_url: str, payload: dict) -> None:
     gpu="A10G",  # 24 GB; drop to "T4" for small scenes, bump to "A100" if OOM/timeout
     timeout=1800,
     secrets=[
-        modal.Secret.from_name("gisviz-r2"),
+        modal.Secret.from_name("custom-secret"),
         modal.Secret.from_name("gisviz-webhook"),
     ],
     image=image,

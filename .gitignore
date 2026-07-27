@@ -29,6 +29,10 @@ src/server/__pycache__
 data
 data_output
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Environment files
 .env
 docker-compose.yaml

@@ -598,6 +598,103 @@
   }
 }
 
+/* Upload page */
+
+.gv-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.gv-toggle-spacer { flex: 1 1 var(--space-4); }
+
+.gv-target-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.gv-new-target {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.gv-coord-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.gv-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-8);
+  border: 1px dashed var(--color-divider);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: center;
+}
+
+.gv-dropzone:hover,
+.gv-dropzone[data-dragging="1"] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.gv-dropzone input { display: none; }
+
+.gv-dropzone-text {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.gv-dropzone-hint { font-size: 12px; }
+
+.gv-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.gv-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 34px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-divider);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
+}
+
+.gv-file-name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gv-file-size { font-size: 12px; }
+
+.gv-job-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+  font-size: 13px;
+  color: var(--color-accent-200);
+}
+
 @media (max-width: 860px) {
   .gv-body {
     grid-template-columns: 1fr;
@@ -609,5 +706,9 @@
 
   .gv-library {
     padding: var(--space-6);
+  }
+
+  .gv-coord-fields {
+    grid-template-columns: 1fr;
   }
 }

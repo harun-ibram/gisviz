@@ -97,8 +97,14 @@ CREATE TABLE public.regions (
     name        TEXT NOT NULL,
     source      TEXT,
     properties  JSONB NOT NULL DEFAULT '{}'::jsonb,  -- room for any extra GeoJSON properties
-    geom        GEOMETRY(MultiPolygon, 4326) NOT NULL
+    -- Nullable: POST /regions creates a region by name only, with no boundary
+    -- drawn yet; geom is filled in later.
+    geom        GEOMETRY(MultiPolygon, 4326)
 );
+
+-- Safe to run against an already-deployed database where this column is still
+-- NOT NULL (DROP NOT NULL on an already-nullable column is a no-op, not an error).
+ALTER TABLE public.regions ALTER COLUMN geom DROP NOT NULL;
 
 CREATE INDEX idx_regions_geom ON public.regions USING GIST (geom);
 CREATE INDEX idx_regions_properties ON public.regions USING GIN (properties);

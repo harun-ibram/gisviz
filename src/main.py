@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func, text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
 from models import (
@@ -218,7 +219,11 @@ async def create_node(body: CreateNodeRequest, session: SessionDep):
         ),
         params={"lon": body.lon, "lat": body.lat, "tags": json.dumps({"name": body.name})},
     ).first()
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=f"Could not create node: {exc.orig}") from exc
     return {"node_id": row[0]}
 
 
@@ -231,7 +236,11 @@ async def create_region(body: CreateRegionRequest, session: SessionDep):
     """Create a bare region (name only, no boundary yet) to attach a splat to later."""
     region = Region(id=str(uuid.uuid4()), name=body.name, geom=None)
     session.add(region)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=f"Could not create region: {exc.orig}") from exc
     return {"id": region.id, "name": region.name}
 
 

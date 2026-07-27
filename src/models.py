@@ -108,7 +108,9 @@ class Region(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
-    geom: Any = Field(sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=False))
+    # Nullable: a region created via POST /regions (name only, no drawn boundary
+    # yet) has no geometry until one is assigned later.
+    geom: Any | None = Field(default=None, sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=True))
     model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
 
 

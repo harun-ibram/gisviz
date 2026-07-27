@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlmodel import Session, SQLModel, select
 
 from models import (
@@ -195,6 +195,46 @@ async def get_node_model_path(node_id: int, session: SessionDep):
         "filename": node.model_path.split("/")[-1],
     }
     
+class CreateNodeRequest(BaseModel):
+    name: str
+    lat: float
+    lon: float
+
+
+@app.post("/nodes")
+async def create_node(body: CreateNodeRequest, session: SessionDep):
+    """Create a bare node (point + name tag) to attach a splat to later."""
+    row = session.exec(
+        text(
+            """
+            INSERT INTO osm.nodes (node_id, geom, tags)
+            VALUES (
+                (SELECT COALESCE(MIN(node_id), 0) - 1 FROM osm.nodes),
+                ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
+                CAST(:tags AS jsonb)
+            )
+            RETURNING node_id
+            """
+        ),
+        params={"lon": body.lon, "lat": body.lat, "tags": json.dumps({"name": body.name})},
+    ).first()
+    session.commit()
+    return {"node_id": row[0]}
+
+
+class CreateRegionRequest(BaseModel):
+    name: str
+
+
+@app.post("/regions")
+async def create_region(body: CreateRegionRequest, session: SessionDep):
+    """Create a bare region (name only, no boundary yet) to attach a splat to later."""
+    region = Region(id=str(uuid.uuid4()), name=body.name, geom=None)
+    session.add(region)
+    session.commit()
+    return {"id": region.id, "name": region.name}
+
+
 @app.get("/regions")
 async def get_regions(session: SessionDep):
     rows = session.exec(

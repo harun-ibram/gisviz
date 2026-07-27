@@ -2,9 +2,10 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import './App.css'
 import SplatViewer from './components/SplatViewer.jsx'
 import Home from './components/Home.jsx'
+import Upload from './components/Upload.jsx'
 import { SplatLibraryProvider } from './hooks/SplatLibraryProvider.jsx'
 import { useSplatLibrary } from './hooks/useSplatLibrary.js'
-import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion } from './components/icons.jsx'
+import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion, IconUpload } from './components/icons.jsx'
 import { Analytics } from '@vercel/analytics/react'
 
 const navLinkClass = ({ isActive }) => `gv-nav-link${isActive ? ' gv-nav-link--active' : ''}`
@@ -24,6 +25,7 @@ function Header() {
             <nav className="gv-nav">
                 <NavLink to="/" end className={navLinkClass}>Library</NavLink>
                 <NavLink to="/viewer" className={navLinkClass}>Visualizer</NavLink>
+                <NavLink to="/upload" className={navLinkClass}>Upload</NavLink>
             </nav>
             <div className="gv-header-meta">
                 
@@ -47,6 +49,10 @@ function Sidebar() {
                 <NavLink to="/viewer" className={sideLinkClass}>
                     <IconVisualizer />
                     <span>Visualizer</span>
+                </NavLink>
+                <NavLink to="/upload" className={sideLinkClass}>
+                    <IconUpload />
+                    <span>Upload photos</span>
                 </NavLink>
             </div>
             <div className="gv-side-group">
@@ -85,6 +91,7 @@ function App() {
                             <Routes>
                                 <Route path="/" element={<Home />} />
                                 <Route path="/viewer" element={<SplatViewer />} />
+                                <Route path="/upload" element={<Upload />} />
                             </Routes>
                         </main>
                     </div>

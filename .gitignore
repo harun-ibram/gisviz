@@ -33,8 +33,9 @@ data_output
 .env
 docker-compose.yaml
 init-scripts
-scripts/
-scripts/*
+scripts/__pycache__
+scripts/schema.sql
+scripts/gis/__pycache__
 backend/bin
 backend/include
 backend/lib
@@ -44,3 +45,5 @@ backend/pyvenv.cfg
 splats/
 backend/pyvenv.cfg
 key.json
+*.pdf
+src/__pycache__

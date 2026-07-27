@@ -1,0 +1,11 @@
+# GIS processing (Step 2) dependencies — install into the backend venv:
+#   source backend/bin/activate && pip install -r scripts/gis/requirements.txt
+rasterio>=1.4       # GDAL-backed raster I/O + warping
+pyproj>=3.7         # CRS transforms
+geopandas>=1.0      # vector data (GeoJSON / OSM) load + reproject
+shapely>=2.0        # geometry repair (make_valid)
+pyogrio>=0.9        # fast vector reader used by geopandas (OSM/GeoJSON drivers)
+laspy>=2.5          # LAS/LAZ point-cloud reader
+lazrs>=0.6          # LAZ decompression backend for laspy
+numpy>=1.26         # gridding / stats / colorization
+Pillow>=10          # write RGBA PNG overlays

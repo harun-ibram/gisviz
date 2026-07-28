@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
+import { getFileExtension, getFileName } from '../utils.jsx'
+import { IconArrowRight, IconNode, IconRegion, IconSearch } from './icons.jsx'
 
 const collectCoordinatePairs = (coordinates, pairs = []) => {
     if (!Array.isArray(coordinates) || coordinates.length === 0) {
@@ -40,157 +43,190 @@ const formatCoordinateSummary = (geometry) => {
     return `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
 }
 
-function Home() {
-    const [splats, setSplats] = useState([])
-    const [error, setError] = useState('')
-    const [selectedSplatId, setSelectedSplatId] = useState(null)
+const decorateSplat = (type, { key, name, modelPath, geom }) => ({
+    key,
+    type,
+    name,
+    modelPath,
+    coords: formatCoordinateSummary(geom),
+    format: modelPath ? `.${getFileExtension(modelPath)}` : '—',
+})
 
-    useEffect(() => {
-        document.title = 'Home'
-
-        const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
-        let active = true
-
-        const loadSplats = async () => {
-            try {
-                const [nodesResponse, regionsResponse] = await Promise.all([
-                    fetch(`${apiBaseUrl}/splat_nodes`),
-                    fetch(`${apiBaseUrl}/splat_regions`),
-                ])
-
-                if (!nodesResponse.ok || !regionsResponse.ok) {
-                    throw new Error('Unable to load splats from the backend.')
-                }
-
-                const [nodes, regions] = await Promise.all([
-                    nodesResponse.json(),
-                    regionsResponse.json(),
-                ])
-
-                if (!active) {
-                    return
-                }
-
-                setSplats([
-                    ...nodes.map((node) => ({
-                        type: 'node',
-                        id: node.node_id,
-                        name: node.model_path ?? `Node ${node.node_id}`,
-                        modelPath: node.model_path,
-                        data: node,
-                    })),
-                    ...regions.map((region) => ({
-                        type: 'region',
-                        id: region.id,
-                        name: region.name,
-                        modelPath: region.model_path,
-                        data: region,
-                    })),
-                ])
-                setSelectedSplatId((currentSelectedSplatId) => {
-                    const firstSplatId = nodes[0]?.node_id ?? regions[0]?.id ?? null
-
-                    return currentSelectedSplatId ?? firstSplatId
-                })
-                setError('')
-            } catch (loadError) {
-                if (!active) {
-                    return
-                }
-
-                setError(loadError instanceof Error ? loadError.message : 'Unable to load splats.')
-            }
-        }
-
-        loadSplats()
-
-        return () => {
-            active = false
-        }
-    }, [])
-
-    const selectedSplat = splats.find((splat) => splat.id === selectedSplatId) ?? splats[0] ?? null
-
+function SplatRow({ item, active, onSelect }) {
+    const Icon = item.type === 'Node' ? IconNode : IconRegion
 
     return (
-        <section className="home-screen">
-            <div className="copy-2">
-                <div className="main-wrapper">
-                    <div className="list-box list-box--home">
-                        <div className="subtitle subtitle--home">
-                            <span>Available Splats</span>
-                            <span className="subtitle-count">{splats.length}</span>
-                        </div>
-                        {error ? <p className="list-error">{error}</p> : null}
-                        <ul className="splat-list">
-                            {splats.length > 0 ? (
-                                splats.map((splat) => (
-                                    <li
-                                        className={`splat-item${selectedSplat?.id === splat.id ? ' splat-item--selected' : ''}`}
-                                        key={`${splat.type}-${splat.id}`}
-                                    >
-                                        <button
-                                            className="splat-link"
-                                            type="button"
-                                            onClick={() => setSelectedSplatId(splat.id)}
-                                        >
-                                            <span className="splat-name">{splat.name}</span>
-                                            <span className="splat-meta">{splat.type}</span>
-                                            <span className="splat-arrow" aria-hidden="true">{selectedSplat?.id === splat.id ? 'selected' : 'select'}</span>
-                                        </button>
-                                    </li>
-                                ))
-                            ) : (
-                                <li className="splat-empty">No splats are available yet.</li>
-                            )}
-                        </ul>
-                    </div>
-                    <aside className="details-box">
-                        <div className="subtitle subtitle--home">
-                            <span>Selected Splat</span>
-                            <span className="subtitle-count">{selectedSplat ? '1' : '0'}</span>
-                        </div>
-                        {selectedSplat ? (
-                            <>
-                                <div className="details-name">{selectedSplat.name}</div>
-                                <dl className="details-grid">
-                                    <div className="details-row">
-                                        <dt>Type</dt>
-                                        <dd>{selectedSplat.type}</dd>
-                                    </div>
-                                    <div className="details-row">
-                                        <dt>Coordinates</dt>
-                                        <dd>{formatCoordinateSummary(selectedSplat.data.geom)}</dd>
-                                    </div>
-                                    <div className="details-row">
-                                        <dt>Model path</dt>
-                                        <dd>{selectedSplat.modelPath ?? 'Not available'}</dd>
-                                    </div>
-                                </dl>
-                                <p className="details-hint">Press OK to open the viewer.</p>
-                            </>
-                        ) : (
-                            <p className="details-empty">Select a splat to preview its details here.</p>
-                        )}
-                        {selectedSplat ? (
-                            <Link
-                                className="keycap"
-                                to="/viewer"
-                                state={{ modelPath: selectedSplat.modelPath, name: selectedSplat.name }}
-                            >
-                                <aside className="letter">OK</aside>
-                            </Link>
-                        ) : (
-                            <article className="keycap keycap--disabled" aria-disabled="true">
-                                <aside className="letter">OK</aside>
-                            </article>
-                        )}
-                    </aside>
-                </div>
-            </div>
-        </section>
-    );
+        <button type="button" className="gv-row" data-active={active ? '1' : '0'} onClick={onSelect}>
+            <span className="gv-row-icon">
+                <Icon />
+            </span>
+            <span className="gv-row-text">
+                <span className="gv-row-name">{item.name}</span>
+                <span className="gv-row-coords text-muted">{item.coords}</span>
+            </span>
+            <span className="tag tag-outline">{item.format}</span>
+        </button>
+    )
 }
 
+function Home() {
+    const { nodes, regions, error, loading } = useSplatLibrary()
+    const [search, setSearch] = useState('')
+    const [selectedKey, setSelectedKey] = useState(null)
+
+    useEffect(() => {
+        document.title = 'Library'
+    }, [])
+
+    const decoratedNodes = useMemo(
+        () => nodes.map((node) => decorateSplat('Node', {
+            key: `node-${node.node_id}`,
+            name: node.model_path ? getFileName(node.model_path) : `Node ${node.node_id}`,
+            modelPath: node.model_path,
+            geom: node.geom,
+        })),
+        [nodes],
+    )
+
+    const decoratedRegions = useMemo(
+        () => regions.map((region) => decorateSplat('Region', {
+            key: `region-${region.id}`,
+            name: region.name,
+            modelPath: region.model_path,
+            geom: region.geom,
+        })),
+        [regions],
+    )
+
+    const query = search.trim().toLowerCase()
+    const matches = (item) => !query || item.name.toLowerCase().includes(query)
+    const filteredNodes = decoratedNodes.filter(matches)
+    const filteredRegions = decoratedRegions.filter(matches)
+
+    const all = useMemo(() => [...decoratedNodes, ...decoratedRegions], [decoratedNodes, decoratedRegions])
+    const selected = all.find((item) => item.key === selectedKey) ?? all[0] ?? null
+
+    return (
+        <div className="gv-library">
+            <div className="gv-library-head">
+                <div>
+                    <div className="card-kicker">Library</div>
+                    <h2 className="gv-library-title">Available splats</h2>
+                    <p className="text-muted gv-library-subtitle">Select a scene to inspect its metadata, then open it in the visualizer.</p>
+                </div>
+                <div className="field gv-search-field">
+                    <div className="gv-search-wrap">
+                        <span className="gv-search-icon">
+                            <IconSearch />
+                        </span>
+                        <input
+                            className="input gv-search-input"
+                            placeholder="Search splats"
+                            value={search}
+                            onChange={(event) => setSearch(event.target.value)}
+                        />
+                    </div>
+                </div>
+            </div>
+
+            {error ? <p className="gv-library-error">{error}</p> : null}
+
+            <div className="gv-library-grid">
+                <div className="gv-library-lists">
+                    <section>
+                        <div className="gv-section-head">
+                            <h4>Nodes</h4>
+                            <span className="tag tag-neutral">{filteredNodes.length}</span>
+                            <div className="hr gv-section-rule" />
+                        </div>
+                        <div className="gv-section-rows">
+                            {filteredNodes.length > 0 ? (
+                                filteredNodes.map((item) => (
+                                    <SplatRow
+                                        key={item.key}
+                                        item={item}
+                                        active={selected?.key === item.key}
+                                        onSelect={() => setSelectedKey(item.key)}
+                                    />
+                                ))
+                            ) : (
+                                <p className="text-muted gv-empty-row">{loading ? 'Loading nodes…' : 'No nodes found.'}</p>
+                            )}
+                        </div>
+                    </section>
+
+                    <section>
+                        <div className="gv-section-head">
+                            <h4>Regions</h4>
+                            <span className="tag tag-neutral">{filteredRegions.length}</span>
+                            <div className="hr gv-section-rule" />
+                        </div>
+                        <div className="gv-section-rows">
+                            {filteredRegions.length > 0 ? (
+                                filteredRegions.map((item) => (
+                                    <SplatRow
+                                        key={item.key}
+                                        item={item}
+                                        active={selected?.key === item.key}
+                                        onSelect={() => setSelectedKey(item.key)}
+                                    />
+                                ))
+                            ) : (
+                                <p className="text-muted gv-empty-row">{loading ? 'Loading regions…' : 'No regions found.'}</p>
+                            )}
+                        </div>
+                    </section>
+                </div>
+
+                <aside className="gv-detail-rail">
+                    <div className="gv-detail-head">
+                        <span className="text-muted gv-detail-kicker">Selected splat</span>
+                        <span className="tag tag-accent">{selected ? selected.type : '—'}</span>
+                    </div>
+                    {selected ? (
+                        <>
+                            <div className="gv-detail-name">{selected.name}</div>
+                            <div className="gv-detail-rows">
+                                <div className="gv-detail-row">
+                                    <span className="gv-detail-label">Type</span>
+                                    <span className="gv-detail-value">{selected.type}</span>
+                                </div>
+                                <div className="gv-detail-row">
+                                    <span className="gv-detail-label">Coordinates</span>
+                                    <span className="gv-detail-value gv-detail-value--right">{selected.coords}</span>
+                                </div>
+                                <div className="gv-detail-row">
+                                    <span className="gv-detail-label">Format</span>
+                                    <span className="gv-detail-value">{selected.format}</span>
+                                </div>
+                                <div className="gv-detail-row gv-detail-row--stack">
+                                    <span className="gv-detail-label">Model path</span>
+                                    <span className="gv-detail-path">{selected.modelPath ?? 'Not available'}</span>
+                                </div>
+                            </div>
+                            {selected.modelPath ? (
+                                <Link
+                                    className="btn btn-primary btn-block"
+                                    to="/viewer"
+                                    state={{ modelPath: selected.modelPath, name: selected.name }}
+                                >
+                                    <IconArrowRight />
+                                    Open in visualizer
+                                </Link>
+                            ) : (
+                                <span className="btn btn-primary btn-block gv-btn-disabled" aria-disabled="true">
+                                    <IconArrowRight />
+                                    Open in visualizer
+                                </span>
+                            )}
+                        </>
+                    ) : (
+                        <p className="text-muted gv-empty-row">{loading ? 'Loading splats…' : 'Select a splat to preview its details here.'}</p>
+                    )}
+                </aside>
+            </div>
+        </div>
+    )
+}
 
 export default Home

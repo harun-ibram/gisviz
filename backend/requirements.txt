@@ -93,3 +93,4 @@ wcwidth==0.8.2
 webencodings==0.5.1
 websockets==16.1
 yarg==0.1.9
+boto3=1.43.54

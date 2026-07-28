@@ -108,5 +108,34 @@ class Region(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
-    geom: Any = Field(sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=False))
+    # Nullable: a region created via POST /regions (name only, no drawn boundary
+    # yet) has no geometry until one is assigned later.
+    geom: Any | None = Field(default=None, sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=True))
     model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
+
+
+class Job(SQLModel, table=True):
+    __tablename__ = "jobs"
+    __table_args__ = {"schema": "public"}
+
+    # A splat-generation job: photos -> COLMAP + Gaussian splatting -> R2 -> model_path.
+    id: str = Field(primary_key=True)
+    status: str = Field(default="pending")  # pending | processing | done | failed
+    target_type: str = Field(nullable=False)  # "node" | "region"
+    target_id: str = Field(nullable=False)  # OSMNode.node_id (as str) or Region.id
+    input_prefix: str = Field(nullable=False)  # R2 key prefix holding uploaded photos
+    output_key: str | None = Field(default=None, sa_column=Column("output_key", Text))
+    modal_call_id: str | None = Field(default=None, sa_column=Column("modal_call_id", Text))
+    error: str | None = Field(default=None, sa_column=Column("error", Text))
+    created_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(
+            "created_at", DateTime(timezone=True), server_default=text("now()")
+        ),
+    )
+    updated_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(
+            "updated_at", DateTime(timezone=True), server_default=text("now()")
+        ),
+    )

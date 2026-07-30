@@ -1,13 +1,15 @@
 """
-The bridge between the FastAPI app and the CLI processing scripts in
-scripts/gis/.
+The bridge between the FastAPI app and the CLI processing scripts
+(gis_common.py, process_raster.py, process_lidar.py, process_vectors.py),
+which live alongside this module in src/ and double as standalone CLI tools.
 
 Three jobs:
 
-  * import  — put scripts/gis on sys.path and load the four modules lazily, so
-              the ~2-4 s / ~200 MB GDAL import is never paid at app startup and
-              scripts/gis/*.py need no __init__.py (they import each other
-              flatly, as `import gis_common as gc`)
+  * import  — load the four modules lazily, so the ~2-4 s / ~200 MB GDAL
+              import is never paid at app startup. They need no package
+              __init__.py (they import each other flatly, as
+              `import gis_common as gc`), which is why they are not nested
+              under a src subpackage.
   * rebind  — gis_workspace() temporarily points gis_common's module-level path
               globals at a per-job temp directory, so a processor writes into
               that directory instead of the repo. Every processor reads those
@@ -148,19 +150,22 @@ CONFIG = _load_config()
 # ---------------------------------------------------------------------------
 def _resolve_scripts_dir() -> Path:
     """
-    Locate scripts/gis. Resolved from __file__ rather than the cwd, because
-    uvicorn's working directory depends on how the service was started.
+    Locate the processing scripts. They live alongside this module, so by
+    default this is just this file's own directory — resolved from __file__
+    rather than the cwd, because uvicorn's working directory depends on how
+    the service was started. GIS_SCRIPTS_DIR remains as an override for a
+    nonstandard layout (e.g. a deploy that splits src/ across images).
     """
     if CONFIG.scripts_dir_override:
         scripts_dir = Path(CONFIG.scripts_dir_override).expanduser().resolve()
     else:
-        scripts_dir = Path(__file__).resolve().parents[1] / "scripts" / "gis"
+        scripts_dir = Path(__file__).resolve().parent
 
     if not (scripts_dir / "gis_common.py").is_file():
         raise GisInputError(
             "internal",
             f"GIS processing scripts not found at {scripts_dir}. The deployment must include "
-            "the repository's scripts/gis/ directory, or GIS_SCRIPTS_DIR must point at it.",
+            "gis_common.py alongside the rest of src/, or GIS_SCRIPTS_DIR must point at it.",
         )
     return scripts_dir
 

@@ -1,7 +1,7 @@
 """
 GIS schema bootstrap, applied at app startup.
 
-Mirrors scripts/gis/schema_gis.sql, but as a *list of single statements*:
+Mirrors schema_gis.sql (in this same directory), but as a *list of single statements*:
 load_gis.ensure_schema hands the whole file to conn.exec_driver_sql(), which
 works on psycopg but not on pg8000 — its extended query protocol cannot run
 several ';'-separated statements in one call, and that is what the server uses.
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 DDL_STATEMENTS: list[str] = [
     "CREATE EXTENSION IF NOT EXISTS postgis",
     # ---- 1. raster_layers (tiff + lidar) --------------------------------
-    # The table itself predates this pipeline (scripts/gis/schema_gis.sql);
+    # The table itself predates this pipeline (schema_gis.sql);
     # create it if the CLI loader never ran against this database.
     """
     CREATE TABLE IF NOT EXISTS public.raster_layers (

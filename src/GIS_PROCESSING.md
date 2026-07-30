@@ -14,17 +14,21 @@ public/ro.json        process_vectors.py  data_output/gis/regions_4326.geojson  
 data/map.osm          process_vectors.py  data_output/gis/osm_{buildings,roads}_4326.geojson
 ```
 
+These scripts live in `src/` alongside the FastAPI app: `gis_worker.py` imports
+them lazily as plain modules for the upload pipeline (`/gis/*`), and each also
+still runs standalone from the command line, unchanged.
+
 ## Setup
 
 ```bash
 source backend/bin/activate
-pip install -r scripts/gis/requirements.txt
+pip install -r src/requirements.txt
 ```
 
 ## Run (processing only — no database needed)
 
 ```bash
-cd scripts/gis
+cd src
 python process_raster.py                 # Bucharest DEM  -> overlay
 python process_lidar.py  --cell 1.0      # USGS LiDAR .laz -> gridded DEM -> overlay
 python process_vectors.py                # ro.json + map.osm -> clean GeoJSON
@@ -47,22 +51,25 @@ to `public/overlays/`, and a metadata sidecar (bounds + elevation stats).
 Bring the database up first (`docker-compose up`), then:
 
 ```bash
-cd scripts/gis
+cd src
 python load_gis.py --all                 # process raster + lidar + regions and load
 python load_gis.py --all --dry-run       # process only, skip DB writes
 ```
 
-`load_gis.py` ensures the `public.raster_layers` schema (`schema_gis.sql`),
-upserts each raster overlay (bounds as a WGS84 envelope + `overlay_path`), and
-upserts the cleaned `ro.json` regions into `public.regions`. It connects with
-`DB_URL` from the repo-root `.env` — the same database the FastAPI backend reads.
+`load_gis.py` ensures the `public.raster_layers` schema (`schema_gis.sql`, in
+this same directory), upserts each raster overlay (bounds as a WGS84 envelope +
+`overlay_path`), and upserts the cleaned `ro.json` regions into
+`public.regions`. It connects with `DB_URL` from the repo-root `.env` — the
+same database the FastAPI backend reads.
 
 ## Serving to the frontend
 
-The bottom of `load_gis.py` has a copy-paste `RasterLayer` model + `/raster_layers`
-FastAPI endpoint stub to add on the `backend_cloudflare` branch. The endpoint
-returns `overlay_path` + `ST_AsGeoJSON(bounds)`; the React map then draws each
-PNG within its bounds polygon, alongside the existing node/region layers.
+The `/gis/*` endpoints in `gis_api.py` are the live path: upload through the
+frontend, `gis_worker.py` calls these same scripts in a per-job workspace, and
+the result is served with signed R2 URLs. See `GIS_PLAN.md` at the repo root
+for the full API contract.
 
-> Note: like `scripts/load_data.py`, this whole directory is under a
-> `.gitignore`d path. Un-ignore `scripts/gis/` if you want it committed.
+Running `load_gis.py` by hand instead writes straight to `public.raster_layers`
+with `storage='static'` (an `/overlays/*.png` web path served by Vite) — useful
+for the two well-known local fixtures (`output_hh.tif`, the LiDAR tile) without
+going through R2 at all.

@@ -34,8 +34,8 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-# scripts/gis/gis_common.py -> repo root is two parents up.
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# src/gis_common.py -> repo root is one parent up.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Raw inputs currently live in public/ (moved there so the dev server can also
 # serve the originals if needed). Adjust here if they move.

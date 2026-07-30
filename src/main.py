@@ -1,15 +1,21 @@
 import json
+import logging
+import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, SQLModel, select
+from sqlmodel import SQLModel, select
 
+from deps import SessionDep, engine, get_signed_url, get_upload_url, r2_client  # noqa: F401
+from gis_api import router as gis_router
+from gis_schema import ensure_gis_schema, reap_orphaned_gis_jobs
 from models import (
     Job,
     OSMNode,
@@ -20,113 +26,35 @@ from models import (
     Region,
 )
 
-import os
+logger = logging.getLogger(__name__)
 
 
-
-from google.cloud.sql.connector import Connector, IPTypes
-import pg8000
-
-import sqlalchemy
-
-import base64
-import json
-from google.oauth2 import service_account
-import boto3
-from botocore.config import Config
-
-
-r2_client = boto3.client(
-    "s3",
-    endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-    aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-    aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-    config=Config(signature_version="s3v4"),
-    region_name="auto",
-)
-
-def get_signed_url(path: str) -> str:
-    return r2_client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": os.environ["R2_BUCKET_NAME"], "Key": path},
-        ExpiresIn=3600
-)
-
-
-def get_upload_url(path: str) -> str:
-    """Presigned PUT URL so a client can upload a photo straight to R2."""
-    return r2_client.generate_presigned_url(
-        "put_object",
-        Params={"Bucket": os.environ["R2_BUCKET_NAME"], "Key": path},
-        ExpiresIn=3600,
-    )
-
-
-
-def get_gcp_credentials():
-    b64 = os.environ["GOOGLE_CREDENTIALS_B64"]
-    info = json.loads(base64.b64decode(b64))
-    return service_account.Credentials.from_service_account_info(info)
-
-
-def connect_with_connector() -> sqlalchemy.engine.base.Engine:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    Initializes a connection pool for a Cloud SQL instance of Postgres.
+    Bring the GIS schema up to date and clear jobs a restart abandoned.
 
-    Uses the Cloud SQL Python Connector package.
+    Both steps are best-effort: a DDL problem must never take the whole API
+    down with it, and everything outside /gis works fine without them.
     """
-    # Note: Saving credentials in environment variables is convenient, but not
-    # secure - consider a more secure solution such as
-    # Cloud Secret Manager (https://cloud.google.com/secret-manager) to help
-    # keep secrets safe.
+    if os.environ.get("GIS_AUTO_MIGRATE", "1") != "0":
+        try:
+            ensure_gis_schema(engine)
+        except Exception:
+            logger.warning("GIS schema bootstrap failed; /gis may not work", exc_info=True)
 
-    instance_connection_name = os.environ[
-        "INSTANCE_CONNECTION_NAME"
-    ]  # e.g. 'project:region:instance'
-    db_user = os.environ["DB_USER"]  # e.g. 'my-db-user'
-    db_pass = os.environ["DB_PASSWORD"]  # e.g. 'my-db-password'
-    db_name = os.environ["DB_NAME"]  # e.g. 'my-database'
+    try:
+        # Railway kills in-flight BackgroundTasks on redeploy, so anything left
+        # queued or running belongs to a process that no longer exists.
+        reap_orphaned_gis_jobs(engine)
+    except Exception:
+        logger.warning("Could not reap orphaned GIS jobs", exc_info=True)
 
-    ip_type = IPTypes.PRIVATE if os.environ.get("PRIVATE_IP") else IPTypes.PUBLIC
-
-    # initialize Cloud SQL Python Connector object
-    connector = Connector(
-        refresh_strategy="LAZY",
-        credentials=get_gcp_credentials(),
-    )
-
-    def getconn() -> pg8000.dbapi.Connection:
-        conn: pg8000.dbapi.Connection = connector.connect(
-            instance_connection_name,
-            "pg8000",
-            user=db_user,
-            password=db_pass,
-            db=db_name,
-            ip_type=ip_type,
-        )
-        return conn
-
-    # The Cloud SQL Python Connector can be used with SQLAlchemy
-    # using the 'creator' argument to 'create_engine'
-    pool = sqlalchemy.create_engine(
-        "postgresql+pg8000://",
-        creator=getconn,
-        # ...
-    )
-    return pool
-
-# Create the engine once at module load / startup, not per-request
-engine = connect_with_connector()
-
-def get_session():
-    with Session(engine) as session:
-        yield session
-
-SessionDep = Annotated[Session, Depends(get_session)]
+    yield
 
 
 # FastAPI and middleware
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -134,6 +62,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+app.include_router(gis_router)
 
 
 # Helper function for formatting the data in the table into a usable object

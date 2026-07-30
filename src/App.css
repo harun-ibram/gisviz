@@ -712,3 +712,542 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* — GIS page — */
+
+/* .seg is inline-flex by default; stretching each option makes the four tabs
+   fill the column. */
+.gv-gis-tabs {
+  display: flex;
+  width: 100%;
+}
+
+.gv-gis-tabs .seg-opt {
+  flex: 1;
+  justify-content: center;
+}
+
+.gv-gis-blurb {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+}
+
+.gv-gis-limits {
+  margin: 0 0 var(--space-4);
+  font-size: 12px;
+}
+
+.gv-gis-name { margin-top: var(--space-4); }
+
+.gv-gis-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.gv-gis-option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.gv-gis-option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.gv-gis-option-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.gv-gis-option-help {
+  margin: 0;
+  font-size: 12px;
+}
+
+.gv-bbox-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.gv-gis-problems {
+  margin: var(--space-4) 0 0;
+  padding: 10px 14px 10px 30px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  font-size: 13px;
+}
+
+.gv-gis-problems li + li { margin-top: 4px; }
+
+.gv-gis-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.gv-gis-filters .gv-search-field { margin: 0; }
+.gv-gis-inview { font-size: 13px; }
+
+/* — upload progress — */
+.gv-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: var(--space-4) 0;
+}
+
+.gv-progress-label {
+  font-size: 12px;
+  color: var(--color-accent-200);
+  font-variant-numeric: tabular-nums;
+}
+
+.gv-progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  overflow: hidden;
+}
+
+.gv-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-accent);
+  transition: width 120ms linear;
+}
+
+/* — job stepper — */
+.gv-job-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.gv-step {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 13px;
+}
+
+.gv-step-dot {
+  width: 8px;
+  height: 8px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--color-neutral-700);
+}
+
+.gv-step[data-state="done"] .gv-step-dot { background: var(--color-accent-600); }
+
+.gv-step[data-state="active"] .gv-step-dot {
+  background: var(--color-accent);
+  animation: gv-pulse 2.4s ease-in-out infinite;
+}
+
+.gv-step[data-state="pending"] .gv-step-label { color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.gv-step[data-state="active"] .gv-step-label { color: var(--color-accent-200); }
+
+.gv-job-log {
+  grid-column: 2;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+}
+
+.gv-job-details { font-size: 12px; }
+.gv-job-details summary { cursor: pointer; color: var(--color-accent-200); }
+
+.gv-job-others {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-divider);
+}
+
+.gv-job-other {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 8px 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.gv-job-other:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+
+.gv-job-other-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* — error card — */
+.gv-error-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 50%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+
+.gv-error-card-title {
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  font-size: 14px;
+}
+
+.gv-error-card-detail {
+  margin: 0;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--color-text) 82%, transparent);
+}
+
+/* — layer rows — */
+.gv-layer-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.gv-layer-group-head {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 2px;
+}
+
+.gv-layer-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
+}
+
+.gv-layer-row[data-active="1"] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.gv-layer-visibility {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  cursor: pointer;
+}
+
+.gv-layer-visibility input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.gv-layer-eye {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-divider);
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.gv-layer-visibility:hover .gv-layer-eye { border-color: var(--color-accent); }
+
+.gv-layer-visibility input:checked + .gv-layer-eye {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-200);
+}
+
+.gv-layer-visibility input:focus-visible + .gv-layer-eye {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.gv-layer-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gv-layer-name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gv-layer-name-line .gv-row-name { min-width: 0; }
+
+.gv-row-icon--sm {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--radius-sm);
+}
+
+.gv-layer-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.gv-opacity {
+  width: 78px;
+  accent-color: var(--color-accent);
+}
+
+/* — legend — */
+.gv-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.gv-legend-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.gv-legend-title { font-size: 13px; font-weight: 500; }
+.gv-legend-unit { font-size: 11px; }
+
+.gv-legend-ramp {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-divider);
+}
+
+.gv-legend-mean {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--color-text);
+  transform: translateX(-1px);
+}
+
+.gv-legend-ticks {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+
+.gv-legend-tick-mean {
+  position: absolute;
+  transform: translateX(-50%);
+  color: var(--color-text);
+}
+
+.gv-legend-clip { font-size: 11px; }
+
+/* — map — */
+.gv-gis-map {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.gv-gis-map-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.gv-gis-map-head h4 { margin: 0; }
+.gv-gis-map-head-spacer { flex: 1; }
+
+.gv-gis-map-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+  font-size: 13px;
+}
+
+.gv-gis-map-notice[data-tone="warn"] {
+  border-color: color-mix(in srgb, var(--color-accent-2) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent-2) 10%, transparent);
+}
+
+.gv-gis-map-notice-text { flex: 1 1 240px; }
+
+/* .leaflet-container needs an explicit height or the map is 0px tall and the
+   whole page looks broken. */
+.gv-gis-map-canvas {
+  height: 540px;
+  min-height: 360px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.gv-gis-map-canvas .gv-leaflet {
+  width: 100%;
+  height: 100%;
+}
+
+.gv-gis-map-empty {
+  margin: 0;
+  font-size: 13px;
+}
+
+.gv-gis-map-fit { align-self: flex-start; margin-top: 0; width: auto; }
+
+.gv-feature-props {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.gv-feature-props .gv-detail-value {
+  word-break: break-word;
+  max-width: 60%;
+}
+
+@media (max-width: 860px) {
+  .gv-bbox-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gv-gis-map-canvas {
+    height: 380px;
+  }
+}
+
+/* — Leaflet dark restyle —
+   Scoped under .gv-gis-map, and last in the file so it beats leaflet.css (which
+   index.css imports first) at equal specificity without !important. */
+.gv-gis-map .leaflet-container {
+  background: #101220;
+  font-family: var(--font-body);
+  font-size: 12px;
+}
+
+.gv-gis-map .leaflet-bar,
+.gv-gis-map .leaflet-control-layers {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.gv-gis-map .leaflet-bar a,
+.gv-gis-map .leaflet-control-layers-toggle {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.gv-gis-map .leaflet-bar a:last-child { border-bottom: 0; }
+
+.gv-gis-map .leaflet-bar a:hover,
+.gv-gis-map .leaflet-bar a:focus {
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface));
+  color: var(--color-accent-200);
+}
+
+.gv-gis-map .leaflet-bar a.leaflet-disabled {
+  background: var(--color-surface);
+  color: color-mix(in srgb, var(--color-text) 30%, transparent);
+}
+
+.gv-gis-map .leaflet-control-attribution {
+  padding: 2px 8px;
+  border-top-left-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+  backdrop-filter: blur(6px);
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+  font-size: 10px;
+}
+
+.gv-gis-map .leaflet-control-attribution a { color: var(--color-accent-300); }
+
+.gv-gis-map .leaflet-popup-content-wrapper,
+.gv-gis-map .leaflet-popup-tip,
+.gv-gis-map .leaflet-tooltip {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-md);
+}
+
+.gv-gis-map .leaflet-container a.leaflet-popup-close-button { color: var(--color-text); }
+
+.gv-gis-map .leaflet-container :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The light OSM basemap only. Filtering .leaflet-container instead would render
+   the terrain ramp and every vector in negative. */
+.gv-gis-map-canvas[data-basemap="osm"] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+}

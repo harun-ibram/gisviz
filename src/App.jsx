@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import './App.css'
 import SplatViewer from './components/SplatViewer.jsx'
@@ -5,8 +6,13 @@ import Home from './components/Home.jsx'
 import Upload from './components/Upload.jsx'
 import { SplatLibraryProvider } from './hooks/SplatLibraryProvider.jsx'
 import { useSplatLibrary } from './hooks/useSplatLibrary.js'
-import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion, IconUpload } from './components/icons.jsx'
+import { GisLibraryProvider } from './hooks/GisLibraryProvider.jsx'
+import { useGisLibrary } from './hooks/useGisLibrary.js'
+import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion, IconUpload, IconLayers } from './components/icons.jsx'
 import { Analytics } from '@vercel/analytics/react'
+
+// Lazy so Leaflet and the GIS page stay out of the Home/Viewer chunk.
+const GisPage = lazy(() => import('./components/gis/GisPage.jsx'))
 
 const navLinkClass = ({ isActive }) => `gv-nav-link${isActive ? ' gv-nav-link--active' : ''}`
 const sideLinkClass = ({ isActive }) => `gv-side${isActive ? ' gv-side--active' : ''}`
@@ -26,6 +32,7 @@ function Header() {
                 <NavLink to="/" end className={navLinkClass}>Library</NavLink>
                 <NavLink to="/viewer" className={navLinkClass}>Visualizer</NavLink>
                 <NavLink to="/upload" className={navLinkClass}>Upload</NavLink>
+                <NavLink to="/gis" className={navLinkClass}>GIS</NavLink>
             </nav>
             <div className="gv-header-meta">
                 
@@ -36,7 +43,8 @@ function Header() {
 }
 
 function Sidebar() {
-    const { nodes, regions, apiBaseUrl } = useSplatLibrary()
+    const { nodes, regions } = useSplatLibrary()
+    const { layers } = useGisLibrary()
 
     return (
         <aside className="gv-sidebar">
@@ -54,6 +62,10 @@ function Sidebar() {
                     <IconUpload />
                     <span>Upload photos</span>
                 </NavLink>
+                <NavLink to="/gis" className={sideLinkClass}>
+                    <IconLayers />
+                    <span>GIS layers</span>
+                </NavLink>
             </div>
             <div className="gv-side-group">
                 <span className="gv-side-label">Collections</span>
@@ -66,6 +78,11 @@ function Sidebar() {
                     <IconRegion />
                     <span className="gv-side-flex">Regions</span>
                     <span className="tag tag-neutral">{regions.length}</span>
+                </div>
+                <div className="gv-side gv-side--static">
+                    <IconLayers />
+                    <span className="gv-side-flex">GIS layers</span>
+                    <span className="tag tag-neutral">{layers.length}</span>
                 </div>
             </div>
             <div className="gv-backend">
@@ -83,20 +100,32 @@ function App() {
     return (
         <BrowserRouter>
             <SplatLibraryProvider>
-                <div className="gv-shell">
-                    <Header />
-                    <div className="gv-body">
-                        <Sidebar />
-                        <main className="gv-main">
-                            <Routes>
-                                <Route path="/" element={<Home />} />
-                                <Route path="/viewer" element={<SplatViewer />} />
-                                <Route path="/upload" element={<Upload />} />
-                            </Routes>
-                        </main>
+                {/* Nests inside: the GIS provider reads apiBaseUrl from the splat
+                    context, and Sidebar needs its layer count. */}
+                <GisLibraryProvider>
+                    <div className="gv-shell">
+                        <Header />
+                        <div className="gv-body">
+                            <Sidebar />
+                            <main className="gv-main">
+                                <Routes>
+                                    <Route path="/" element={<Home />} />
+                                    <Route path="/viewer" element={<SplatViewer />} />
+                                    <Route path="/upload" element={<Upload />} />
+                                    <Route
+                                        path="/gis"
+                                        element={(
+                                            <Suspense fallback={<div className="gv-library"><p className="text-muted">Loading map…</p></div>}>
+                                                <GisPage />
+                                            </Suspense>
+                                        )}
+                                    />
+                                </Routes>
+                            </main>
+                        </div>
                     </div>
-                </div>
-                <Analytics />
+                    <Analytics />
+                </GisLibraryProvider>
             </SplatLibraryProvider>
         </BrowserRouter>
     )

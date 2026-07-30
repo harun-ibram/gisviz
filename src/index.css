@@ -1,3 +1,6 @@
+/* First, so our dark overrides at the end of App.css (imported by App.jsx, and
+   therefore later) win at equal specificity without !important. */
+@import 'leaflet/dist/leaflet.css';
 @import './theme/nocturne.css';
 
 :root {

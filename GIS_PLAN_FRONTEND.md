@@ -438,9 +438,9 @@ means it renders nothing today anyway. Deleting it, its `.map-svg`/`.map-loading
 
 ## Critical files
 
-- `/home/sunny/practica/gisviz/src/App.jsx` — nav in **both** `Header` and `Sidebar`, `/gis` route, provider nesting
-- `/home/sunny/practica/gisviz/src/hooks/SplatLibraryProvider.jsx` — read-only: the `apiBaseUrl` source and the provider shape to mirror
-- `/home/sunny/practica/gisviz/src/components/Upload.jsx` — read-only: upload pool, poll loop, dropzone, page layout to re-implement
-- `/home/sunny/practica/gisviz/src/App.css` — new `gv-gis-*` classes + the Leaflet dark restyle at the end
-- `/home/sunny/practica/gisviz/src/theme/nocturne.css` — read-only: `.seg`/`.seg-opt` radio semantics and the tokens to use
-- `/home/sunny/practica/gisviz/package.json` — `leaflet ^1.9.4`, `react-leaflet ^5.0.0`
+- `/home/harun/practica/gisviz/src/App.jsx` — nav in **both** `Header` and `Sidebar`, `/gis` route, provider nesting
+- `/home/harun/practica/gisviz/src/hooks/SplatLibraryProvider.jsx` — read-only: the `apiBaseUrl` source and the provider shape to mirror
+- `/home/harun/practica/gisviz/src/components/Upload.jsx` — read-only: upload pool, poll loop, dropzone, page layout to re-implement
+- `/home/harun/practica/gisviz/src/App.css` — new `gv-gis-*` classes + the Leaflet dark restyle at the end
+- `/home/harun/practica/gisviz/src/theme/nocturne.css` — read-only: `.seg`/`.seg-opt` radio semantics and the tokens to use
+- `/home/harun/practica/gisviz/package.json` — `leaflet ^1.9.4`, `react-leaflet ^5.0.0`

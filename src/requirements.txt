@@ -7,3 +7,16 @@ cloud-sql-python-connector[pg8000]==1.20.4
 python-dotenv==1.2.2
 boto3==1.43.54
 modal==1.5.3
+
+# GIS processing (scripts/gis/*) — pinned to exactly what the working backend/
+# venv has. scripts/gis/requirements.txt uses >= ranges, which are fine on a dev
+# box but would let a future Railway rebuild pull a new GDAL major unannounced.
+rasterio==1.5.0
+pyproj==3.7.2
+geopandas==1.1.4
+shapely==2.1.2
+pyogrio==0.13.0
+laspy==2.7.0
+lazrs==0.8.1
+numpy==2.5.1
+Pillow==12.3.0

@@ -114,6 +114,128 @@ class Region(SQLModel, table=True):
     model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
 
 
+class RasterLayer(SQLModel, table=True):
+    """
+    A web-ready raster overlay: colorized PNG + the WGS84 envelope that places
+    it on the map. Rows come either from the CLI loader (scripts/gis/load_gis.py,
+    storage='static', paths under /overlays/) or from the upload pipeline
+    (storage='r2', paths are R2 keys).
+    """
+
+    __tablename__ = "raster_layers"
+    __table_args__ = {"schema": "public"}
+
+    id: str = Field(primary_key=True)
+    name: str = Field(nullable=False)
+    kind: str = Field(default="dem")  # dem | dsm | raster
+    layer_type: str = Field(default="tiff")  # tiff | lidar
+    storage: str = Field(default="r2")  # r2 | static
+    source: str | None = Field(default=None)
+    src_crs: str | None = Field(default=None)
+    overlay_path: str = Field(nullable=False)
+    geotiff_path: str | None = Field(default=None, sa_column=Column("geotiff_path", Text))
+    stats: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    properties: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    bounds: Any = Field(sa_column=Column(GeometryType("Polygon", 4326), nullable=False))
+    job_id: str | None = Field(default=None, sa_column=Column("job_id", Text))
+    created_at: datetime | None = Field(
+        default=None,
+        sa_column=Column("created_at", DateTime(timezone=True), server_default=text("now()")),
+    )
+
+
+class VectorLayer(SQLModel, table=True):
+    """
+    A processed vector layer. The features themselves live in R2 as a GeoJSON
+    object (geojson_key); this row is metadata plus the envelope, so the map can
+    decide whether a layer is even in view before fetching it.
+    """
+
+    __tablename__ = "vector_layers"
+    __table_args__ = {"schema": "public"}
+
+    id: str = Field(primary_key=True)
+    name: str = Field(nullable=False)
+    layer_type: str = Field(nullable=False)  # osm | geojson
+    sublayer: str = Field(default="features")  # buildings | roads | features
+    source: str | None = Field(default=None)
+    src_crs: str | None = Field(default=None)
+    geojson_key: str = Field(nullable=False)
+    feature_count: int = Field(default=0, nullable=False)
+    size_bytes: int | None = Field(default=None)
+    properties: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    # Nullable: a layer whose features have no computable extent still indexes.
+    bounds: Any | None = Field(
+        default=None, sa_column=Column(GeometryType("Polygon", 4326), nullable=True)
+    )
+    job_id: str | None = Field(default=None, sa_column=Column("job_id", Text))
+    created_at: datetime | None = Field(
+        default=None,
+        sa_column=Column("created_at", DateTime(timezone=True), server_default=text("now()")),
+    )
+
+
+class GisJob(SQLModel, table=True):
+    """
+    An upload -> process -> index run for one of the four GIS input types.
+
+    Kept apart from public.jobs (the splat pipeline): that table's
+    target_type/target_id are NOT NULL and meaningless here, its status
+    vocabulary has no 'queued', and it carries a modal_call_id no GIS job has.
+    """
+
+    __tablename__ = "gis_jobs"
+    __table_args__ = {"schema": "public"}
+
+    id: str = Field(primary_key=True)
+    layer_type: str = Field(nullable=False)  # tiff | osm | geojson | lidar
+    name: str = Field(nullable=False)
+    # awaiting_upload | queued | running | done | failed | cancelled
+    status: str = Field(default="awaiting_upload")
+    # while running: downloading | preflight | processing | uploading | indexing
+    step: str | None = Field(default=None, sa_column=Column("step", Text))
+    input_prefix: str = Field(nullable=False)
+    input_files: list[Any] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    )
+    options: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    layer_ids: list[Any] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    )
+    output_prefix: str | None = Field(default=None, sa_column=Column("output_prefix", Text))
+    error: str | None = Field(default=None, sa_column=Column("error", Text))
+    error_kind: str | None = Field(default=None, sa_column=Column("error_kind", Text))
+    log: str | None = Field(default=None, sa_column=Column("log", Text))
+    created_at: datetime | None = Field(
+        default=None,
+        sa_column=Column("created_at", DateTime(timezone=True), server_default=text("now()")),
+    )
+    started_at: datetime | None = Field(
+        default=None, sa_column=Column("started_at", DateTime(timezone=True))
+    )
+    finished_at: datetime | None = Field(
+        default=None, sa_column=Column("finished_at", DateTime(timezone=True))
+    )
+    updated_at: datetime | None = Field(
+        default=None,
+        sa_column=Column("updated_at", DateTime(timezone=True), server_default=text("now()")),
+    )
+
+
 class Job(SQLModel, table=True):
     __tablename__ = "jobs"
     __table_args__ = {"schema": "public"}

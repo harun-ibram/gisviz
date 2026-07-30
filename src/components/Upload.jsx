@@ -11,42 +11,93 @@ const POLL_INTERVAL_MS = 3000
 // Cap how many PUTs are in flight at a time and work through the rest as a
 // queue.
 const UPLOAD_CONCURRENCY = 6
+const UPLOAD_RETRIES = 3
+const RETRY_BASE_DELAY_MS = 500
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// A reset connection makes fetch reject outright rather than return a non-ok
+// response, so a single stalled PUT would otherwise sink the whole batch.
+async function uploadOne(file, uploadUrl, signal) {
+    let lastError
+
+    for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
+        if (attempt > 0) {
+            await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1))
+        }
+
+        let uploadResponse
+
+        try {
+            uploadResponse = await fetch(uploadUrl, {
+                method: 'PUT',
+                body: file,
+                headers: { 'Content-Type': file.type },
+                signal,
+            })
+        } catch (networkError) {
+            if (signal.aborted) {
+                throw networkError
+            }
+
+            lastError = networkError
+            continue
+        }
+
+        if (uploadResponse.ok) {
+            return
+        }
+
+        lastError = new Error(`Upload failed for ${file.name} (${uploadResponse.status})`)
+
+        // A rejected signature or an expired URL will not fix itself.
+        if (uploadResponse.status !== 429 && uploadResponse.status < 500) {
+            throw lastError
+        }
+    }
+
+    throw lastError
+}
 
 async function uploadFilesInBatches(files, uploadUrls, onProgress) {
+    // Fail before spending bandwidth rather than on the last file of the set.
+    const withoutUrl = files.find((file) => !uploadUrls?.[file.name])
+
+    if (withoutUrl) {
+        throw new Error(`No upload URL was issued for ${withoutUrl.name}`)
+    }
+
+    const controller = new AbortController()
     let nextIndex = 0
     let completed = 0
 
-    const uploadOne = async (file) => {
-        const uploadUrl = uploadUrls?.[file.name]
-
-        if (!uploadUrl) {
-            throw new Error(`No upload URL was issued for ${file.name}`)
-        }
-
-        const uploadResponse = await fetch(uploadUrl, {
-            method: 'PUT',
-            body: file,
-            headers: { 'Content-Type': file.type },
-        })
-
-        if (!uploadResponse.ok) {
-            throw new Error(`Upload failed for ${file.name} (${uploadResponse.status})`)
-        }
-
-        completed += 1
-        onProgress?.(completed, files.length)
-    }
-
+    // Workers pull from one shared queue. Claiming an index and advancing it is a
+    // single synchronous step, so no two workers can take the same file.
     const worker = async () => {
-        while (nextIndex < files.length) {
+        while (nextIndex < files.length && !controller.signal.aborted) {
             const file = files[nextIndex]
             nextIndex += 1
-            await uploadOne(file)
+
+            await uploadOne(file, uploadUrls[file.name], controller.signal)
+
+            completed += 1
+            onProgress?.(completed, files.length)
         }
     }
 
     const workerCount = Math.min(UPLOAD_CONCURRENCY, files.length)
-    await Promise.all(Array.from({ length: workerCount }, worker))
+    const workers = Array.from({ length: workerCount }, () => worker())
+
+    try {
+        await Promise.all(workers)
+    } catch (uploadError) {
+        // Promise.all settles on the first rejection while the other workers keep
+        // draining the queue. Abort them so nothing lands after the caller has
+        // already reported the failure, and wait for them to unwind.
+        controller.abort()
+        await Promise.allSettled(workers)
+        throw uploadError
+    }
 }
 
 const formatBytes = (bytes) => {
@@ -214,7 +265,7 @@ function Upload() {
     const pollUntilDone = async (jobId) => {
         // Resolves once the backend reports a terminal state.
         while (true) {
-            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+            await sleep(POLL_INTERVAL_MS)
 
             const response = await fetch(`${apiBaseUrl}/jobs/${jobId}`)
 

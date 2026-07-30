@@ -117,7 +117,7 @@ class Region(SQLModel, table=True):
 class RasterLayer(SQLModel, table=True):
     """
     A web-ready raster overlay: colorized PNG + the WGS84 envelope that places
-    it on the map. Rows come either from the CLI loader (scripts/gis/load_gis.py,
+    it on the map. Rows come either from the CLI loader (src/load_gis.py,
     storage='static', paths under /overlays/) or from the upload pipeline
     (storage='r2', paths are R2 keys).
     """

@@ -4,7 +4,7 @@ load_gis.py — Step 2 (GIS Processing): run the processors and load into PostGI
 
 The bridge from Step 2 (processing) back to Step 1 (PostGIS + FastAPI). It:
 
-  1. ensures the raster_layers schema exists (scripts/gis/schema_gis.sql)
+  1. ensures the raster_layers schema exists (schema_gis.sql)
   2. runs the raster / LiDAR processors to produce web overlays + bounds, and
      upserts each as a row in public.raster_layers
   3. optionally upserts the cleaned ro.json regions into public.regions

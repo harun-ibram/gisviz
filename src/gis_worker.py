@@ -1,5 +1,5 @@
 """
-The GIS background worker: R2 input -> scripts/gis/* -> R2 artifacts -> DB rows.
+The GIS background worker: R2 input -> the processing scripts -> R2 artifacts -> DB rows.
 
 Entered through run_gis_job(job_id), which FastAPI's BackgroundTasks calls after
 POST /gis/jobs/{id}/start. It is a plain `def` on purpose: Starlette runs a sync

@@ -38,6 +38,7 @@ image = (
     .apt_install("colmap", "git", "wget", "ffmpeg", "build-essential")
     .pip_install("torch==2.1.2", "torchvision==0.16.2", index_url="https://download.pytorch.org/whl/cu118")
     .pip_install("nerfstudio", "boto3", "requests")
+    .env({"QT_QPA_PLATFORM": "offscreen"})
 )
 
 

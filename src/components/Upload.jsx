@@ -18,7 +18,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // A reset connection makes fetch reject outright rather than return a non-ok
 // response, so a single stalled PUT would otherwise sink the whole batch.
-async function uploadOne(file, uploadUrl, signal) {
+async function uploadOne(file, uploadUrl) {
     let lastError
 
     for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
@@ -33,13 +33,8 @@ async function uploadOne(file, uploadUrl, signal) {
                 method: 'PUT',
                 body: file,
                 headers: { 'Content-Type': file.type },
-                signal,
             })
         } catch (networkError) {
-            if (signal.aborted) {
-                throw networkError
-            }
-
             lastError = networkError
             continue
         }
@@ -67,37 +62,44 @@ async function uploadFilesInBatches(files, uploadUrls, onProgress) {
         throw new Error(`No upload URL was issued for ${withoutUrl.name}`)
     }
 
-    const controller = new AbortController()
     let nextIndex = 0
-    let completed = 0
+    let settled = 0
+    const uploaded = []
+    const skipped = []
 
     // Workers pull from one shared queue. Claiming an index and advancing it is a
     // single synchronous step, so no two workers can take the same file.
     const worker = async () => {
-        while (nextIndex < files.length && !controller.signal.aborted) {
+        while (nextIndex < files.length) {
             const file = files[nextIndex]
             nextIndex += 1
 
-            await uploadOne(file, uploadUrls[file.name], controller.signal)
+            try {
+                await uploadOne(file, uploadUrls[file.name])
+                uploaded.push(file.name)
+            } catch (uploadError) {
+                // One bad photo should not cost the user the whole set: leave it
+                // out and let the reconstruction run on what did make it up.
+                skipped.push({
+                    name: file.name,
+                    reason: uploadError instanceof Error ? uploadError.message : String(uploadError),
+                })
+            }
 
-            completed += 1
-            onProgress?.(completed, files.length)
+            settled += 1
+            onProgress?.(settled, files.length)
         }
     }
 
     const workerCount = Math.min(UPLOAD_CONCURRENCY, files.length)
-    const workers = Array.from({ length: workerCount }, () => worker())
+    await Promise.all(Array.from({ length: workerCount }, () => worker()))
 
-    try {
-        await Promise.all(workers)
-    } catch (uploadError) {
-        // Promise.all settles on the first rejection while the other workers keep
-        // draining the queue. Abort them so nothing lands after the caller has
-        // already reported the failure, and wait for them to unwind.
-        controller.abort()
-        await Promise.allSettled(workers)
-        throw uploadError
+    // Nothing landed in R2, so there is no point starting a GPU job for it.
+    if (uploaded.length === 0) {
+        throw new Error(`All ${files.length} photos failed to upload. ${skipped[0]?.reason ?? ''}`.trim())
     }
+
+    return { uploaded, skipped }
 }
 
 const formatBytes = (bytes) => {
@@ -153,6 +155,7 @@ function Upload() {
 
     const [running, setRunning] = useState(false)
     const [status, setStatus] = useState('')
+    const [notice, setNotice] = useState('')
     const [error, setError] = useState('')
     const [result, setResult] = useState(null) // { modelPath, name }
 
@@ -258,6 +261,7 @@ function Upload() {
     const reset = () => {
         setRunning(false)
         setStatus('')
+        setNotice('')
         setError('')
         setResult(null)
     }
@@ -287,6 +291,7 @@ function Upload() {
 
     const handleProcess = async () => {
         setRunning(true)
+        setNotice('')
         setError('')
         setResult(null)
 
@@ -338,9 +343,16 @@ function Upload() {
 
             setStatus(`Uploading photo 0/${files.length}…`)
 
-            await uploadFilesInBatches(files, uploadUrls, (done, total) => {
+            const { skipped } = await uploadFilesInBatches(files, uploadUrls, (done, total) => {
                 setStatus(`Uploading photo ${done}/${total}…`)
             })
+
+            if (skipped.length > 0) {
+                setNotice(
+                    `${skipped.length} of ${files.length} photos could not be uploaded and were skipped: `
+                    + skipped.map((item) => item.name).join(', '),
+                )
+            }
 
             setStatus('Starting job…')
 
@@ -575,6 +587,8 @@ function Upload() {
                             {status}
                         </div>
                     ) : null}
+
+                    {notice ? <p className="text-muted gv-job-notice">{notice}</p> : null}
 
                     {error ? <p className="gv-library-error">{error}</p> : null}
 

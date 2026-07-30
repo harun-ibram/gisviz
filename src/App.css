@@ -695,6 +695,12 @@
   color: var(--color-accent-200);
 }
 
+.gv-job-notice {
+  margin: var(--space-3) 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 860px) {
   .gv-body {
     grid-template-columns: 1fr;

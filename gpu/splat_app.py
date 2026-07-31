@@ -35,12 +35,55 @@ image = (
     modal.Image.from_registry(
         "nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10"
     )
-    .apt_install("colmap", "git", "wget", "ffmpeg", "build-essential", "cmake")
+    # NOTE: deliberately *not* `apt_install("colmap")`. The distro package is
+    # built without CUDA, and COLMAP only falls back to SiftGPU-over-OpenGL in
+    # that case — which aborts in a headless container. We build it ourselves
+    # below instead. The list here is COLMAP 3.8's build deps (minus Qt/CGAL,
+    # which GUI_ENABLED=OFF / CGAL_ENABLED=OFF make unnecessary).
+    .apt_install(
+        "git", "wget", "ffmpeg", "build-essential", "cmake", "ninja-build",
+        "libboost-program-options-dev", "libboost-filesystem-dev",
+        "libboost-graph-dev", "libboost-system-dev", "libboost-test-dev",
+        "libeigen3-dev", "libflann-dev", "libfreeimage-dev", "liblz4-dev",
+        "libmetis-dev", "libgoogle-glog-dev", "libgtest-dev", "libsqlite3-dev",
+        "libceres-dev", "libsuitesparse-dev", "libglew-dev", "libgl1-mesa-dev",
+    )
     # Must come *before* pip_install: image steps are ordered, and some
     # nerfstudio deps (fpsample, pyliblzfse) have no cp310 wheels and compile
     # from source. The `add_python` interpreter reports clang as its compiler,
     # which isn't in this image, so point setuptools/CMake at gcc instead.
     .env({"QT_QPA_PLATFORM": "offscreen", "CC": "gcc", "CXX": "g++"})
+    # Build COLMAP with CUDA so feature extraction/matching run on the GPU.
+    # With -DCUDA_ENABLED=ON, SiftGPU is compiled against CUDA and the
+    # OpenGLContextManager that crashes headless is #ifdef'd out entirely
+    # (src/feature/extraction.cc: `#ifndef CUDA_ENABLED`).
+    #
+    # Pinned to 3.8: it's the newest tag that builds against the Ceres 2.0 in
+    # Ubuntu 22.04. COLMAP >=3.9 uses the Ceres 2.1 Manifold API and needs
+    # Ceres built from source too.
+    #
+    # Architectures are listed explicitly because build machines have no GPU,
+    # so `native` can't work: 75=T4, 80=A100, 86=A10G — keep in sync with the
+    # `gpu=` choices on the function below.
+    .run_commands(
+        "git clone --branch 3.8 --depth 1 https://github.com/colmap/colmap.git /tmp/colmap",
+        "cmake -S /tmp/colmap -B /tmp/colmap/build -GNinja"
+        " -DCMAKE_BUILD_TYPE=Release"
+        " -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc"
+        " -DCMAKE_CUDA_ARCHITECTURES='75;80;86'"
+        " -DCUDA_ENABLED=ON"
+        " -DGUI_ENABLED=OFF"
+        " -DCGAL_ENABLED=OFF"
+        " -DTESTS_ENABLED=OFF"
+        " -DIPO_ENABLED=OFF",  # LTO across 3 CUDA archs roughly doubles build time
+        "ninja -C /tmp/colmap/build install",
+        # CUDA_ENABLED is best-effort in COLMAP's CMake: if it can't find CUDA
+        # it silently produces the same OpenGL-dependent binary that fails at
+        # runtime. Fail the *image build* instead of a user's job.
+        "ldd /usr/local/bin/colmap | grep -q libcudart"
+        " || (echo 'COLMAP built without CUDA — check nvcc detection' && exit 1)",
+        "rm -rf /tmp/colmap",
+    )
     .pip_install("torch==2.1.2", "torchvision==0.16.2", index_url="https://download.pytorch.org/whl/cu118")
     .pip_install("nerfstudio", "boto3", "requests")
 )
@@ -88,8 +131,10 @@ def _post_webhook(webhook_url: str, payload: dict) -> None:
 
 
 @app.function(
-    gpu="A10G",  # 24 GB; drop to "T4" for small scenes, bump to "A100" if OOM/timeout
-    timeout=1800,
+    # 24 GB; drop to "T4" for small scenes, bump to "A100" if OOM/timeout. If you
+    # add a card outside sm_75/80/86, add its arch to CMAKE_CUDA_ARCHITECTURES.
+    gpu="A10G",
+    timeout=3600,  # splatfacto's 30k iters dominate; SfM is minutes on the GPU
     secrets=[
         modal.Secret.from_name("custom-secret"),
         modal.Secret.from_name("gisviz-webhook"),
@@ -111,6 +156,8 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
             raise RuntimeError(f"No photos found under {input_prefix}")
 
         # 1) COLMAP (structure-from-motion) -> transforms.json + sparse cloud.
+        # Runs SIFT on the GPU (nerfstudio's default), which only works because
+        # the image builds COLMAP with CUDA — see the image definition above.
         subprocess.run(
             ["ns-process-data", "images", "--data", images_dir,
              "--output-dir", processed_dir],

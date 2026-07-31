@@ -56,6 +56,17 @@ and calls the webhook, which is what sets `model_path`.
 - **Splat format**: the worker exports nerfstudio's `.ply` (3DGS). Confirm this
   matches what the frontend viewer loads (`.ply` vs `.splat`/`.ksplat`); adjust
   the `ns-export` step in `splat_app.py` if not.
+- **COLMAP is built from source, not apt.** The distro package has no CUDA
+  support, so COLMAP falls back to SiftGPU-over-OpenGL and aborts in a headless
+  container (`Check failed: context_.create()` in `opengl_utils.cc`). The image
+  compiles COLMAP 3.8 with `-DCUDA_ENABLED=ON`, which `#ifdef`s that GL context
+  out and runs SIFT on CUDA. Consequences to know about:
+  - First `modal deploy` after touching the apt/build layers recompiles COLMAP
+    (~15–25 min); it's cached after that.
+  - The build targets sm_75/80/86 (T4/A100/A10G). Using a different GPU means
+    adding its arch to `CMAKE_CUDA_ARCHITECTURES`.
+  - Pinned to 3.8 because it's the last release that builds against Ubuntu
+    22.04's Ceres 2.0; upgrading COLMAP also means building Ceres from source.
 - **Image build**: the nerfstudio + CUDA image is the main technical risk.
   Iterate with `modal run gpu/splat_app.py` before `modal deploy`. Fallback is a
   hand-rolled COLMAP CLI + graphdeco-inria/gaussian-splatting path (noted in

@@ -172,7 +172,7 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
         )
         # 2) Train the Gaussian splat. Headless flag so it exits when done.
         subprocess.run(
-            ["ns-train", "splatfacto", "--data", processed_dir,
+            ["ns-train", "splatfacto-w", "--data", processed_dir,
              "--output-dir", train_dir,
              "--viewer.quit-on-train-completion", "True"],
             check=True,

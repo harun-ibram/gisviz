@@ -67,6 +67,13 @@ image = (
     # `gpu=` choices on the function below.
     .run_commands(
         "git clone --branch 3.8 --depth 1 https://github.com/colmap/colmap.git /tmp/colmap",
+        # 3.8 bug in exactly our configuration (CUDA on, GUI off): sift.cc guards
+        # its GL header with `#if !defined(GUI_ENABLED) && !defined(CUDA_ENABLED)`
+        # yet still passes GL_LUMINANCE/GL_UNSIGNED_BYTE to SiftGPU::RunSIFT, so
+        # the enums are undeclared. Include glew.h unconditionally (header-only
+        # here — they're macros, so this adds no link dependency).
+        '''sed -i '/^#include "flann\\/flann.hpp"$/a #include <GL/glew.h>' /tmp/colmap/src/feature/sift.cc'''
+        " && grep -q '#include <GL/glew.h>' /tmp/colmap/src/feature/sift.cc",
         "cmake -S /tmp/colmap -B /tmp/colmap/build -GNinja"
         " -DCMAKE_BUILD_TYPE=Release"
         " -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc"

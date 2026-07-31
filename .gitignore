@@ -47,3 +47,4 @@ backend/pyvenv.cfg
 key.json
 *.pdf
 src/__pycache__
+gpu/__pycache__

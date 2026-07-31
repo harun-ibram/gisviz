@@ -35,10 +35,14 @@ image = (
     modal.Image.from_registry(
         "nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10"
     )
-    .apt_install("colmap", "git", "wget", "ffmpeg", "build-essential")
+    .apt_install("colmap", "git", "wget", "ffmpeg", "build-essential", "cmake")
+    # Must come *before* pip_install: image steps are ordered, and some
+    # nerfstudio deps (fpsample, pyliblzfse) have no cp310 wheels and compile
+    # from source. The `add_python` interpreter reports clang as its compiler,
+    # which isn't in this image, so point setuptools/CMake at gcc instead.
+    .env({"QT_QPA_PLATFORM": "offscreen", "CC": "gcc", "CXX": "g++"})
     .pip_install("torch==2.1.2", "torchvision==0.16.2", index_url="https://download.pytorch.org/whl/cu118")
     .pip_install("nerfstudio", "boto3", "requests")
-    .env({"QT_QPA_PLATFORM": "offscreen"})
 )
 
 

@@ -117,6 +117,39 @@ DDL_STATEMENTS: list[str] = [
            v.geojson_key, v.bounds, v.properties, v.job_id, v.created_at
     FROM public.vector_layers v
     """,
+    # ---- 5. buildings ---------------------------------------------------
+    # One row per OSM footprint, carrying the height/volume building_heights.py
+    # derived from a LiDAR DSM/DEM pair. Unlike vector_layers (whose features
+    # live in R2 as one GeoJSON blob) these are queried individually — the map
+    # asks for "buildings in this bbox" and extrudes each by height_m.
+    #
+    # The measurements are NULLABLE on purpose: a footprint outside the LiDAR
+    # tile or under dense canopy has no usable height, and NULL renders as "no
+    # data" where 0 would draw a confident, wrong, flat box.
+    """
+    CREATE TABLE IF NOT EXISTS public.buildings (
+        id                TEXT PRIMARY KEY,
+        layer_id          TEXT,
+        lidar_layer_id    TEXT,
+        osm_id            BIGINT,
+        name              TEXT,
+        ground_m          REAL,
+        roof_m            REAL,
+        height_m          REAL,
+        footprint_area_m2 REAL,
+        volume_prism_m3   REAL,
+        volume_lidar_m3   REAL,
+        coverage          REAL NOT NULL DEFAULT 0,
+        cell_count        INTEGER NOT NULL DEFAULT 0,
+        properties        JSONB NOT NULL DEFAULT '{}'::jsonb,
+        job_id            TEXT,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        geom              GEOMETRY(MultiPolygon, 4326) NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_buildings_geom  ON public.buildings USING GIST (geom)",
+    "CREATE INDEX IF NOT EXISTS idx_buildings_layer ON public.buildings (layer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_buildings_job   ON public.buildings (job_id)",
 ]
 
 

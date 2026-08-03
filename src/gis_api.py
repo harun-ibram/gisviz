@@ -303,6 +303,57 @@ def _layer_to_dict(row) -> dict[str, Any]:
     }
 
 
+def _parse_bbox(bbox: str) -> dict[str, float]:
+    """`minLon,minLat,maxLon,maxLat` -> bind params, or 400."""
+    parts = [p.strip() for p in bbox.split(",")]
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="bbox must be minLon,minLat,maxLon,maxLat")
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(p) for p in parts)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="bbox values must be numbers") from exc
+    if min_lon >= max_lon or min_lat >= max_lat:
+        raise HTTPException(status_code=400, detail="bbox needs min < max on both axes")
+    return {"min_lon": min_lon, "min_lat": min_lat, "max_lon": max_lon, "max_lat": max_lat}
+
+
+# ---------------------------------------------------------------------------
+# Buildings
+# ---------------------------------------------------------------------------
+_BUILDING_SELECT = """
+    SELECT b.id, b.osm_id, b.name, b.layer_id, b.lidar_layer_id, b.job_id,
+           b.ground_m, b.roof_m, b.height_m, b.footprint_area_m2,
+           b.volume_prism_m3, b.volume_lidar_m3, b.coverage, b.cell_count,
+           b.created_at, ST_AsGeoJSON(b.geom) AS geom_geojson
+    FROM public.buildings b
+"""
+
+
+def _building_to_feature(row) -> dict[str, Any]:
+    """One row as a GeoJSON Feature, so the response drops straight into a map."""
+    return {
+        "type": "Feature",
+        "id": row["id"],
+        "geometry": _as_json(row["geom_geojson"], None),
+        "properties": {
+            "osm_id": row["osm_id"],
+            "name": row["name"],
+            "layer_id": row["layer_id"],
+            "lidar_layer_id": row["lidar_layer_id"],
+            "job_id": row["job_id"],
+            "ground_m": row["ground_m"],
+            "roof_m": row["roof_m"],
+            "height_m": row["height_m"],
+            "footprint_area_m2": row["footprint_area_m2"],
+            "volume_prism_m3": row["volume_prism_m3"],
+            "volume_lidar_m3": row["volume_lidar_m3"],
+            "coverage": row["coverage"],
+            "cell_count": row["cell_count"],
+            "created_at": _iso(row["created_at"]),
+        },
+    }
+
+
 def _fetch_layers(session, where: list[str], params: dict[str, Any]) -> list[dict[str, Any]]:
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     sql = f"{_LAYER_SELECT} {clause} ORDER BY l.created_at DESC, l.id"
@@ -642,20 +693,9 @@ async def list_gis_layers(
         where.append("l.job_id = :job_id")
         params["job_id"] = job_id
     if bbox:
-        parts = [p.strip() for p in bbox.split(",")]
-        if len(parts) != 4:
-            raise HTTPException(status_code=400, detail="bbox must be minLon,minLat,maxLon,maxLat")
-        try:
-            min_lon, min_lat, max_lon, max_lat = (float(p) for p in parts)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="bbox values must be numbers") from exc
-        if min_lon >= max_lon or min_lat >= max_lat:
-            raise HTTPException(status_code=400, detail="bbox needs min < max on both axes")
+        params.update(_parse_bbox(bbox))
         where.append(
             "ST_Intersects(l.bounds, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))"
-        )
-        params.update(
-            {"min_lon": min_lon, "min_lat": min_lat, "max_lon": max_lon, "max_lat": max_lat}
         )
 
     clause = f"WHERE {' AND '.join(where)}" if where else ""
@@ -664,6 +704,65 @@ async def list_gis_layers(
     ).scalar_one()
 
     return {"layers": _fetch_layers(session, where, params), "total": total}
+
+
+@router.get("/buildings")
+async def list_buildings(
+    session: SessionDep,
+    bbox: str | None = None,
+    layer_id: str | None = None,
+    job_id: str | None = None,
+    min_height: float | None = Query(None, ge=0),
+    measured_only: bool = False,
+    limit: int = Query(2000, ge=1, le=20000),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """
+    Building footprints with their LiDAR-derived height and volume, as a GeoJSON
+    FeatureCollection the map can render directly.
+
+    `height_m` is null where the LiDAR did not cover the footprint — render those
+    distinctly rather than extruding them to zero. `measured_only=true` drops
+    them instead.
+    """
+    where: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+
+    if bbox:
+        params.update(_parse_bbox(bbox))
+        where.append(
+            "ST_Intersects(b.geom, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))"
+        )
+    if layer_id:
+        where.append("b.layer_id = :layer_id")
+        params["layer_id"] = layer_id
+    if job_id:
+        where.append("b.job_id = :job_id")
+        params["job_id"] = job_id
+    if min_height is not None:
+        # NULL height_m fails this comparison, so a min_height filter implies
+        # measured_only — no need for the caller to pass both.
+        where.append("b.height_m >= :min_height")
+        params["min_height"] = min_height
+    if measured_only:
+        where.append("b.height_m IS NOT NULL")
+
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    total = session.execute(
+        _stmt(f"SELECT count(*) FROM public.buildings b {clause}", params), params
+    ).scalar_one()
+
+    # Ordered by id so paging is stable; volume desc would be nicer for "biggest
+    # first" but reshuffles as soon as a re-measure changes one row.
+    sql = f"{_BUILDING_SELECT} {clause} ORDER BY b.id LIMIT :limit OFFSET :offset"
+    rows = session.execute(_stmt(sql, params), params).mappings().all()
+
+    return {
+        "type": "FeatureCollection",
+        "features": [_building_to_feature(row) for row in rows],
+        "total": total,
+        "returned": len(rows),
+    }
 
 
 @router.get("/layers/{layer_id}")

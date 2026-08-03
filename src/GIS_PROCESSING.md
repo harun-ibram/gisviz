@@ -84,6 +84,39 @@ integrates every cell, so they agree on flat roofs and diverge on pitched ones.
 Footprints with less than 30% valid LiDAR cover get a **null** height rather
 than a misleading `0`, so the map can render "no data" distinctly.
 
+### Loading buildings into PostGIS
+
+```bash
+python load_gis.py --buildings data_output/gis/city_buildings_heights_4326.geojson \
+    --buildings-layer-id city_osm --buildings-lidar-id t_dsm
+```
+
+Rows go into `public.buildings`, one per footprint, keyed `{layer_id}:{osm_id}`
+so re-measuring the same extract updates in place instead of duplicating.
+Features without an `osm_id` fall back to `{layer_id}:#{index}`, which is stable
+for a given file but not across re-extracts.
+
+Unlike `vector_layers` — whose features live in R2 as a single GeoJSON blob —
+buildings are queried individually, because the map asks for "buildings in this
+bbox" and extrudes each one.
+
+### Serving them
+
+`GET /gis/buildings` returns a GeoJSON FeatureCollection ready to drop into a
+map, with `height_m`, `volume_prism_m3`, `volume_lidar_m3`, `coverage` and the
+rest in each feature's properties.
+
+| query | meaning |
+| --- | --- |
+| `bbox=minLon,minLat,maxLon,maxLat` | only footprints intersecting the box |
+| `layer_id=` / `job_id=` | restrict to one source |
+| `min_height=` | metres; implies measured-only, since NULL fails the comparison |
+| `measured_only=true` | drop footprints with no usable LiDAR cover |
+| `limit=` / `offset=` | paging, default 2000, max 20000 |
+
+`height_m` is `null` where LiDAR did not cover the footprint. Render those
+distinctly rather than extruding to zero.
+
 ## Load into PostGIS (Step 1 integration)
 
 Bring the database up first (`docker-compose up`), then:

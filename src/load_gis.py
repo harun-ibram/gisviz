@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -144,6 +145,168 @@ def upsert_regions(engine, geojson_path: Path) -> int:
     return count
 
 
+# Columns building_heights.py adds to each footprint. Kept as a tuple so the
+# insert, the "did this file come from building_heights?" check and the NULL
+# fallback all read from one list.
+_MEASURED_FIELDS = (
+    "ground_m",
+    "roof_m",
+    "height_m",
+    "footprint_area_m2",
+    "volume_prism_m3",
+    "volume_lidar_m3",
+)
+
+_BUILDING_INSERT = """
+    INSERT INTO public.buildings
+        (id, layer_id, lidar_layer_id, osm_id, name,
+         ground_m, roof_m, height_m, footprint_area_m2,
+         volume_prism_m3, volume_lidar_m3, coverage, cell_count,
+         properties, job_id, geom)
+    VALUES
+        (:id, :layer_id, :lidar_layer_id, :osm_id, :name,
+         :ground_m, :roof_m, :height_m, :footprint_area_m2,
+         :volume_prism_m3, :volume_lidar_m3, :coverage, :cell_count,
+         CAST(:properties AS jsonb), :job_id,
+         ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326)))
+    ON CONFLICT (id) DO UPDATE SET
+        layer_id          = EXCLUDED.layer_id,
+        lidar_layer_id    = EXCLUDED.lidar_layer_id,
+        osm_id            = EXCLUDED.osm_id,
+        name              = EXCLUDED.name,
+        ground_m          = EXCLUDED.ground_m,
+        roof_m            = EXCLUDED.roof_m,
+        height_m          = EXCLUDED.height_m,
+        footprint_area_m2 = EXCLUDED.footprint_area_m2,
+        volume_prism_m3   = EXCLUDED.volume_prism_m3,
+        volume_lidar_m3   = EXCLUDED.volume_lidar_m3,
+        coverage          = EXCLUDED.coverage,
+        cell_count        = EXCLUDED.cell_count,
+        properties        = EXCLUDED.properties,
+        job_id            = EXCLUDED.job_id,
+        geom              = EXCLUDED.geom
+"""
+
+
+def _clean_number(value) -> float | None:
+    """
+    GeoJSON round-trips a missing measurement as either null or NaN depending on
+    the writer. Postgres REAL accepts NaN, which would then compare false against
+    every threshold and sort unpredictably — normalise both to None.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _json_safe(value):
+    """
+    Strip non-finite floats out of a properties blob before json.dumps.
+
+    json.dumps writes NaN/Infinity as bare tokens — valid in Python's dialect,
+    not in JSON — and Postgres rejects the whole insert with
+    'invalid input syntax for type json: Token "NaN" is invalid'.
+    building_heights.py leaves NaN on every unmeasured building, so without this
+    a single uncovered footprint fails the entire batch.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def upsert_buildings(
+    engine,
+    geojson_path: Path,
+    layer_id: str | None = None,
+    lidar_layer_id: str | None = None,
+    job_id: str | None = None,
+    batch_size: int = 500,
+) -> int:
+    """
+    Upsert a building_heights.py output GeoJSON into public.buildings.
+
+    Row ids are ``{layer_id}:{osm_id}`` so re-running the measurement over the
+    same footprints updates in place instead of duplicating. Features without an
+    osm_id fall back to their position in the file, which is stable for a given
+    input but not across re-extracts.
+    """
+    from sqlalchemy import text
+
+    if not geojson_path.exists():
+        print(
+            f"[load] buildings: {gc.rel_to_repo(geojson_path)} missing — "
+            "run `python building_heights.py --dsm ... --dem ... --buildings ...` first"
+        )
+        return 0
+
+    fc = json.loads(geojson_path.read_text())
+    features = fc.get("features", [])
+    if not features:
+        print(f"[load] buildings: no features in {gc.rel_to_repo(geojson_path)}")
+        return 0
+
+    prefix = layer_id or geojson_path.name.split(".")[0]
+    sql = text(_BUILDING_INSERT)
+
+    rows: list[dict] = []
+    skipped = 0
+    for index, feat in enumerate(features):
+        geometry = feat.get("geometry")
+        if not geometry:
+            skipped += 1
+            continue
+
+        props = feat.get("properties", {}) or {}
+        osm_id = props.get("osm_id") or props.get("osm_way_id")
+        try:
+            osm_id = int(osm_id) if osm_id is not None else None
+        except (TypeError, ValueError):
+            osm_id = None
+
+        measured = {field: _clean_number(props.get(field)) for field in _MEASURED_FIELDS}
+        rows.append(
+            {
+                "id": f"{prefix}:{osm_id}" if osm_id is not None else f"{prefix}:#{index}",
+                "layer_id": layer_id,
+                "lidar_layer_id": lidar_layer_id,
+                "osm_id": osm_id,
+                "name": props.get("name"),
+                "coverage": _clean_number(props.get("coverage")) or 0.0,
+                "cell_count": int(props.get("cell_count") or 0),
+                "properties": json.dumps(_json_safe(props)),
+                "job_id": job_id,
+                "geom": json.dumps(geometry),
+                **measured,
+            }
+        )
+
+    # executemany in batches: a city extract is thousands of footprints, and one
+    # round trip each over Cloud SQL turns a two-second load into minutes.
+    count = 0
+    with engine.begin() as conn:
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start : start + batch_size]
+            conn.execute(sql, batch)
+            count += len(batch)
+
+    measured_count = sum(1 for row in rows if row["height_m"] is not None)
+    print(
+        f"[load] buildings <- {count} features "
+        f"({measured_count} with a height, {count - measured_count} without)"
+    )
+    if skipped:
+        print(f"[load] buildings: skipped {skipped} feature(s) with no geometry")
+    return count
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Process GIS inputs and load them into PostGIS.")
     parser.add_argument("--all", action="store_true", help="raster + lidar + regions")
@@ -151,14 +314,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lidar", action="store_true", help="process + load the .laz DEM")
     parser.add_argument("--regions", action="store_true", help="load cleaned ro.json regions")
     parser.add_argument("--cell", type=float, default=1.0, help="LiDAR grid cell size in metres")
+    # Not covered by --all: it needs a path, since the measured file is named
+    # after whichever extract it came from rather than being a fixed fixture.
+    parser.add_argument("--buildings", metavar="GEOJSON", default=None,
+                        help="load a building_heights.py output into public.buildings")
+    parser.add_argument("--buildings-layer-id", default=None,
+                        help="vector_layers.id the footprints came from (also the row-id prefix)")
+    parser.add_argument("--buildings-lidar-id", default=None,
+                        help="raster_layers.id of the DSM the heights were measured against")
     parser.add_argument("--dry-run", action="store_true", help="process only; skip all DB writes")
     args = parser.parse_args(argv)
 
     do_raster = args.raster or args.all
     do_lidar = args.lidar or args.all
     do_regions = args.regions or args.all
-    if not (do_raster or do_lidar or do_regions):
-        parser.error("nothing to do — pass --all, --raster, --lidar and/or --regions")
+    do_buildings = args.buildings is not None
+    if not (do_raster or do_lidar or do_regions or do_buildings):
+        parser.error("nothing to do — pass --all, --raster, --lidar, --regions and/or --buildings")
 
     # --- Step 2: process (no DB needed) -----------------------------------
     layers: list[gc.RasterLayer] = []
@@ -204,6 +376,13 @@ def main(argv: list[str] | None = None) -> int:
         upsert_raster_layer(engine, layer)
     if do_regions:
         upsert_regions(engine, gc.OUTPUT_DIR / "regions_4326.geojson")
+    if do_buildings:
+        upsert_buildings(
+            engine,
+            Path(args.buildings),
+            layer_id=args.buildings_layer_id,
+            lidar_layer_id=args.buildings_lidar_id,
+        )
 
     print("[load] done.")
     return 0

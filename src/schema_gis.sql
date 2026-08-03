@@ -127,3 +127,36 @@ UNION ALL
 SELECT 'vector'::text, v.layer_type, v.id, v.name, NULL::text, v.sublayer,
        v.geojson_key, v.bounds, v.properties, v.job_id, v.created_at
 FROM public.vector_layers v;
+
+-- 5. Buildings (src/building_heights.py). One row per OSM footprint, carrying
+--    the height/volume derived from a LiDAR DSM/DEM pair. Unlike vector_layers
+--    (whose features live in R2 as one GeoJSON blob) these are queried
+--    individually: the map asks for "buildings in this bbox" and extrudes each
+--    by height_m.
+--
+--    The measurements are NULLABLE on purpose. A footprint outside the LiDAR
+--    tile or under dense canopy has no usable height, and NULL renders as "no
+--    data" where 0 would draw a confident, wrong, flat box.
+CREATE TABLE IF NOT EXISTS public.buildings (
+    id                TEXT PRIMARY KEY,
+    layer_id          TEXT,                                 -- vector_layers.id the footprints came from
+    lidar_layer_id    TEXT,                                 -- raster_layers.id of the DSM used
+    osm_id            BIGINT,
+    name              TEXT,
+    ground_m          REAL,                                 -- percentile of DEM in a ring outside the footprint
+    roof_m            REAL,                                 -- percentile of DSM inside the footprint
+    height_m          REAL,                                 -- roof - ground, NULL when uncovered
+    footprint_area_m2 REAL,
+    volume_prism_m3   REAL,                                 -- area x height (what a flat extrusion shows)
+    volume_lidar_m3   REAL,                                 -- per-cell integral under the roof surface
+    coverage          REAL NOT NULL DEFAULT 0,              -- fraction of footprint cells with LiDAR data
+    cell_count        INTEGER NOT NULL DEFAULT 0,
+    properties        JSONB NOT NULL DEFAULT '{}'::jsonb,   -- original OSM tags
+    job_id            TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    geom              GEOMETRY(MultiPolygon, 4326) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_buildings_geom  ON public.buildings USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_buildings_layer ON public.buildings (layer_id);
+CREATE INDEX IF NOT EXISTS idx_buildings_job   ON public.buildings (job_id);

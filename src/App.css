@@ -272,6 +272,15 @@
   font-size: 0.98rem;
 }
 
+/* Counts and totals under the minimap. Sits outside the SVG so it stays
+   legible at any viewport size instead of scaling with the viewBox. */
+.map-caption {
+  margin: 0.5rem 0 0;
+  color: rgba(239, 246, 255, 0.62);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .button {
   display: inline-flex;
   align-self: center;

@@ -583,29 +583,6 @@
   font-size: 13px;
 }
 
-/* Counts and totals under the minimap. Sits outside the SVG so it stays
-   legible at any viewport size instead of scaling with the viewBox. */
-.map-caption {
-  margin: 0.5rem 0 0;
-  color: rgba(239, 246, 255, 0.62);
-  font-size: 0.82rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.button {
-  display: inline-flex;
-  align-self: center;
-  text-align: center;
-  justify-content: center;
-  place-items: center;
-  width: 10em;
-  height: 3.25em;
-  color: white;
-  font-size: 2.25vh;
-  background-color: rgb(16, 8, 63);
-  border-color: rgb(28, 16, 99);
-  border-style: hidden;
-  margin: 0;
 /* — responsive — */
 @media (max-width: 1100px) {
   .gv-library-grid {

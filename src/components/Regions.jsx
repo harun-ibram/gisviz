@@ -17,8 +17,8 @@ function Regions() {
 
     const decoratedRegions = useMemo(
         () => allRegions.map((region) => decorateSplat('Region', {
-            key: `region-${region.region_id}`,
-            name: region.model_path ? getFileName(region.model_path) : `Region ${region.region_id}`,
+            key: `region-${region.id}`,
+            name: region.name ?? (region.model_path ? getFileName(region.model_path) : `Region ${region.id}`),
             modelPath: region.model_path,
             geom: region.geom,
         })),

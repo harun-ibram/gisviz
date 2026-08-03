@@ -11,10 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import SQLModel, select
+from sqlmodel import Session, SQLModel, select
 
 from deps import SessionDep, engine, get_signed_url, get_upload_url, r2_client  # noqa: F401
 from gis_api import router as gis_router
+from gis_runtime import slugify
 from gis_schema import ensure_gis_schema, reap_orphaned_gis_jobs
 from models import (
     Job,
@@ -264,6 +265,15 @@ async def create_job(body: CreateJobRequest, session: SessionDep):
     return {"job_id": job_id, "input_prefix": input_prefix, "upload_urls": upload_urls}
 
 
+def _target_name(job: Job, session: Session) -> str | None:
+    """The display name of a job's node/region, used to name the output splat."""
+    if job.target_type == "node":
+        node = session.get(OSMNode, int(job.target_id))
+        return (node.tags or {}).get("name") if node else None
+    region = session.get(Region, job.target_id)
+    return region.name if region else None
+
+
 @app.post("/jobs/{job_id}/start")
 async def start_job(job_id: str, session: SessionDep):
     """Kick off the GPU job on Modal once the photos have been uploaded."""
@@ -275,7 +285,12 @@ async def start_job(job_id: str, session: SessionDep):
     if job.status == "processing":
         return {"job_id": job_id, "status": job.status}
 
-    output_key = f"models/{job_id}/scene.ply"
+    # Name the object after the target so downloads and the viewer's filename
+    # (model_path.split("/")[-1]) read as "old_town.ply" rather than "scene.ply"
+    # for every splat ever produced. The job_id stays in the prefix, so it is
+    # still what guarantees uniqueness — two targets may share a name, and
+    # re-running a job must not overwrite the previous splat.
+    output_key = f"models/{job_id}/{slugify(_target_name(job, session) or 'scene')}.ply"
     backend_url = os.environ["BACKEND_PUBLIC_URL"].rstrip("/")
     webhook_url = f"{backend_url}/jobs/{job_id}/webhook"
 

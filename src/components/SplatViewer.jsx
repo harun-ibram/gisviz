@@ -20,12 +20,21 @@ const MAX_DISTANCE = 24
 const ZOOM_STEP = 1.18 // per wheel notch; multiplicative so every notch feels equal
 const BUTTON_STEPS = 3 // one +/- press is worth this many notches
 
-// Free-fly movement. WASD walks the view plane, E/Q lift and drop along world Y
-// (not camera Y, so a tilted view still rises straight up).
+// Free-fly movement. WASD walks the ground plane in the direction you are
+// facing, E/Q lift and drop along world Y (not camera Y, so looking down and
+// pressing E still takes you straight up).
 const MOVE_SPEED = 2.2 // world units per second
 const SPRINT_MULTIPLIER = 3
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ'])
 const SPRINT_KEYS = new Set(['ShiftLeft', 'ShiftRight'])
+
+// Mouse look. Yaw is unbounded; pitch stops just short of straight up/down so
+// the view can never flip past vertical and invert the controls.
+const LOOK_SENSITIVITY = 0.0022 // radians per pixel
+const MAX_PITCH = Math.PI / 2 - 0.01
+// A press that travels less than this is a click (engage pointer lock), more is
+// a drag (look around). Without it, every drag would also grab the pointer.
+const CLICK_SLOP_PX = 4
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
@@ -41,9 +50,14 @@ const isTypingTarget = (target) =>
     const sparkRef = useRef(null)
     const splatRef = useRef(null)
     const frameRef = useRef(0)
-    const dragStateRef = useRef({ isDragging: false, lastX: 0, lastY: 0 })
+    const dragStateRef = useRef({ isDragging: false, lastX: 0, lastY: 0, travel: 0 })
     const cameraRef = useRef(null)
     const keysRef = useRef(new Set())
+    // Camera orientation is tracked here rather than read back off the matrix:
+    // accumulating into Euler angles is what keeps pitch clampable and roll at
+    // exactly zero.
+    const lookRef = useRef({ yaw: 0, pitch: 0 })
+    const [pointerLocked, setPointerLocked] = useState(false)
     const [selectedFile, setSelectedFile] = useState(null)
     const [remoteSource, setRemoteSource] = useState(null) // { url, name }
     const [status, setStatus] = useState('Waiting for file upload')
@@ -120,9 +134,18 @@ const isTypingTarget = (target) =>
       scene.background = new THREE.Color(0x07111f)
 
       const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
+      // YXZ = yaw about world Y, then pitch about the camera's own X. The
+      // default XYZ order would let roll creep in as soon as both are non-zero.
+      camera.rotation.order = 'YXZ'
       camera.position.copy(CAMERA_START)
       camera.lookAt(0, 0, 0)
       cameraRef.current = camera
+
+      // Seed the look angles from that initial lookAt, so the first mouse
+      // movement continues from where the scene opens instead of snapping.
+      const look = lookRef.current
+      look.yaw = camera.rotation.y
+      look.pitch = camera.rotation.x
 
       const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true })
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -148,22 +171,37 @@ const isTypingTarget = (target) =>
         renderer.setSize(clientWidth, clientHeight, false)
       }
 
+      // Mouse look. Moving right turns right, moving down looks down — hence the
+      // subtraction on both axes.
+      const applyLook = (deltaX, deltaY) => {
+        look.yaw -= deltaX * LOOK_SENSITIVITY
+        look.pitch = clamp(look.pitch - deltaY * LOOK_SENSITIVITY, -MAX_PITCH, MAX_PITCH)
+        camera.rotation.set(look.pitch, look.yaw, 0)
+      }
+
       const handlePointerDown = (event) => {
-        if (event.button !== 0 || !splatRef.current) {
+        if (event.button !== 0) {
           return
         }
 
-        dragStateRef.current.isDragging = true
-        dragStateRef.current.lastX = event.clientX
-        dragStateRef.current.lastY = event.clientY
+        const dragState = dragStateRef.current
+        dragState.isDragging = true
+        dragState.lastX = event.clientX
+        dragState.lastY = event.clientY
+        dragState.travel = 0
         renderer.domElement.setPointerCapture?.(event.pointerId)
         event.preventDefault()
       }
 
       const handlePointerMove = (event) => {
-        const dragState = dragStateRef.current
+        // While the pointer is locked the browser reports movement directly and
+        // there is no drag to track — mousemove drives the look instead.
+        if (document.pointerLockElement === renderer.domElement) {
+          return
+        }
 
-        if (!dragState.isDragging || !splatRef.current) {
+        const dragState = dragStateRef.current
+        if (!dragState.isDragging) {
           return
         }
 
@@ -172,10 +210,10 @@ const isTypingTarget = (target) =>
 
         dragState.lastX = event.clientX
         dragState.lastY = event.clientY
+        dragState.travel += Math.abs(deltaX) + Math.abs(deltaY)
 
         if (deltaX !== 0 || deltaY !== 0) {
-          splatRef.current.rotation.y += deltaX * 0.01
-          splatRef.current.rotation.x += deltaY * 0.01
+          applyLook(deltaX, deltaY)
         }
       }
 
@@ -186,6 +224,24 @@ const isTypingTarget = (target) =>
 
         dragStateRef.current.isDragging = false
         renderer.domElement.releasePointerCapture?.(event.pointerId)
+      }
+
+      // A genuine click (not the tail of a drag) grabs the pointer for
+      // continuous FPS look; Esc hands it back, which the browser handles.
+      const handleClick = () => {
+        if (dragStateRef.current.travel <= CLICK_SLOP_PX) {
+          renderer.domElement.requestPointerLock?.()
+        }
+      }
+
+      const handleLockedMouseMove = (event) => {
+        if (document.pointerLockElement === renderer.domElement) {
+          applyLook(event.movementX, event.movementY)
+        }
+      }
+
+      const handleLockChange = () => {
+        setPointerLocked(document.pointerLockElement === renderer.domElement)
       }
 
       const keys = keysRef.current
@@ -232,7 +288,10 @@ const isTypingTarget = (target) =>
           return
         }
 
-        camera.getWorldDirection(forward)
+        // Forward comes from yaw alone, deliberately ignoring pitch: in an FPS
+        // camera, looking at your feet and pressing W walks you along the
+        // ground rather than burying you in it. E/Q own the vertical axis.
+        forward.set(-Math.sin(look.yaw), 0, -Math.cos(look.yaw))
         right.crossVectors(forward, camera.up).normalize()
         move.set(0, 0, 0)
 
@@ -264,6 +323,9 @@ const isTypingTarget = (target) =>
       renderer.domElement.addEventListener('pointermove', handlePointerMove)
       renderer.domElement.addEventListener('pointerup', handlePointerUp)
       renderer.domElement.addEventListener('pointercancel', handlePointerUp)
+      renderer.domElement.addEventListener('click', handleClick)
+      document.addEventListener('mousemove', handleLockedMouseMove)
+      document.addEventListener('pointerlockchange', handleLockChange)
       window.addEventListener('keydown', handleKeyDown)
       window.addEventListener('keyup', handleKeyUp)
       window.addEventListener('blur', handleBlur)
@@ -290,10 +352,18 @@ const isTypingTarget = (target) =>
         renderer.domElement.removeEventListener('pointermove', handlePointerMove)
         renderer.domElement.removeEventListener('pointerup', handlePointerUp)
         renderer.domElement.removeEventListener('pointercancel', handlePointerUp)
+        renderer.domElement.removeEventListener('click', handleClick)
+        document.removeEventListener('mousemove', handleLockedMouseMove)
+        document.removeEventListener('pointerlockchange', handleLockChange)
         window.removeEventListener('keydown', handleKeyDown)
         window.removeEventListener('keyup', handleKeyUp)
         window.removeEventListener('blur', handleBlur)
         keys.clear()
+
+        // Leaving the page while locked would otherwise strand the cursor.
+        if (document.pointerLockElement === renderer.domElement) {
+          document.exitPointerLock?.()
+        }
 
         if (splatRef.current) {
           scene.remove(splatRef.current)
@@ -508,8 +578,19 @@ const isTypingTarget = (target) =>
             {error ? <div className="gv-stage-alert">{error}</div> : null}
             <div className="gv-stage-hint">
               <span className="gv-stage-hint-dot" />
-              Drag to orbit · scroll to zoom · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move
-              · <kbd>E</kbd>/<kbd>Q</kbd> up and down · <kbd>Shift</kbd> to sprint
+              {pointerLocked ? (
+                <>
+                  Mouse to look · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move
+                  · <kbd>E</kbd>/<kbd>Q</kbd> up and down · <kbd>Shift</kbd> to sprint
+                  · <kbd>Esc</kbd> to release
+                </>
+              ) : (
+                <>
+                  Click to look around · drag to look · scroll to zoom
+                  · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move
+                  · <kbd>E</kbd>/<kbd>Q</kbd> up and down
+                </>
+              )}
             </div>
           </div>
 

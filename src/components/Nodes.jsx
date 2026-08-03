@@ -52,7 +52,7 @@ function Nodes() {
                     <section>
                         <div className="gv-section-head">
                             <h4>Nodes</h4>
-                            <span className="tag tag-neutral">{allNodes.length}</span>
+                            <span className="tag tag-neutral">{filteredNodes.length}</span>
                             <div className="hr gv-section-rule" />
                         </div>
                         <div className="gv-section-rows">

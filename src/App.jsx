@@ -11,6 +11,7 @@ import { GisLibraryProvider } from './hooks/GisLibraryProvider.jsx'
 import { useGisLibrary } from './hooks/useGisLibrary.js'
 import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion, IconUpload, IconLayers } from './components/icons.jsx'
 import { Analytics } from '@vercel/analytics/react'
+import Regions from './components/Regions.jsx'
 
 // Lazy so Leaflet and the GIS page stay out of the Home/Viewer chunk.
 const GisPage = lazy(() => import('./components/gis/GisPage.jsx'))
@@ -44,7 +45,7 @@ function Header() {
 }
 
 function Sidebar() {
-    const { nodes, regions } = useSplatLibrary()
+    const { nodes, regions, allNodes, allRegions } = useSplatLibrary()
     const { layers } = useGisLibrary()
 
     return (
@@ -73,12 +74,12 @@ function Sidebar() {
                 <NavLink to="/nodes" className={sideLinkClass}>
                     <IconNode />
                     <span className="gv-side-flex">Nodes</span>
-                    <span className="tag tag-neutral">{nodes.length}</span>
+                    <span className="tag tag-neutral">{allNodes.length}</span>
                 </NavLink>
                 <NavLink to="/regions" className={sideLinkClass}>
                     <IconRegion />
                     <span className="gv-side-flex">Regions</span>
-                    <span className="tag tag-neutral">{regions.length}</span>
+                    <span className="tag tag-neutral">{allRegions.length}</span>
                 </NavLink>
                 <NavLink to="/layers" className={sideLinkClass}>
                     <IconLayers />
@@ -115,6 +116,7 @@ function App() {
                                         )}
                                     />
                                     <Route path="/nodes" element={<Nodes />} />
+                                    <Route path="/regions" element={<Regions />} />
                                 </Routes>
                             </main>
                         </div>

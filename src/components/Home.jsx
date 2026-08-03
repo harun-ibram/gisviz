@@ -3,56 +3,9 @@ import { Link } from 'react-router-dom'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { getFileExtension, getFileName } from '../utils.jsx'
 import { IconArrowRight, IconNode, IconRegion, IconSearch } from './icons.jsx'
+import { decorateSplat, collectCoordinatePairs, formatCoordinateSummary } from './libraryUtils.jsx'
 
-const collectCoordinatePairs = (coordinates, pairs = []) => {
-    if (!Array.isArray(coordinates) || coordinates.length === 0) {
-        return pairs
-    }
-
-    if (typeof coordinates[0] === 'number') {
-        const [longitude, latitude] = coordinates
-        pairs.push([longitude, latitude])
-        return pairs
-    }
-
-    coordinates.forEach((nestedCoordinates) => {
-        collectCoordinatePairs(nestedCoordinates, pairs)
-    })
-
-    return pairs
-}
-
-const formatCoordinateSummary = (geometry) => {
-    const coordinatePairs = collectCoordinatePairs(geometry?.coordinates)
-
-    if (coordinatePairs.length === 0) {
-        return 'Coordinates unavailable'
-    }
-
-    const [longitudeSum, latitudeSum] = coordinatePairs.reduce(
-        (accumulator, [longitude, latitude]) => [
-            accumulator[0] + longitude,
-            accumulator[1] + latitude,
-        ],
-        [0, 0],
-    )
-
-    const longitude = longitudeSum / coordinatePairs.length
-    const latitude = latitudeSum / coordinatePairs.length
-
-    return `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
-}
-
-const decorateSplat = (type, { key, name, modelPath, geom }) => ({
-    key,
-    type,
-    name,
-    modelPath,
-    coords: formatCoordinateSummary(geom),
-    format: modelPath ? `.${getFileExtension(modelPath)}` : '—',
-})
-
-function SplatRow({ item, active, onSelect }) {
+export function SplatRow({ item, active, onSelect }) {
     const Icon = item.type === 'Node' ? IconNode : IconRegion
 
     return (

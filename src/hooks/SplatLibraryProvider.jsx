@@ -5,27 +5,33 @@ const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
 
 export function SplatLibraryProvider({ children }) {
     const [nodes, setNodes] = useState([])
+    const [allNodes, setAllNodes] = useState([])
     const [regions, setRegions] = useState([])
+    const [allRegions, setAllRegions] = useState([])
     const [error, setError] = useState('')
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
         let active = true
 
-        const loadSplats = async () => {
+        const loadResults = async () => {
             try {
-                const [nodesResponse, regionsResponse] = await Promise.all([
+                const [nodesResponse, regionsResponse, allNodesResponse, allRegionsResponse] = await Promise.all([
                     fetch(`${apiBaseUrl}/splat_nodes`),
                     fetch(`${apiBaseUrl}/splat_regions`),
+                    fetch(`${apiBaseUrl}/nodes`),
+                    fetch(`${apiBaseUrl}/regions`)
                 ])
 
-                if (!nodesResponse.ok || !regionsResponse.ok) {
-                    throw new Error('Unable to load splats from the backend.')
+                if (!nodesResponse.ok || !regionsResponse.ok || !allNodesResponse.ok || !allRegionsResponse.ok) {
+                    throw new Error('Unable to load results from the backend.')
                 }
 
-                const [nodesData, regionsData] = await Promise.all([
+                const [nodesData, regionsData, allNodesData, allRegionsData] = await Promise.all([
                     nodesResponse.json(),
                     regionsResponse.json(),
+                    allNodesResponse.json(),
+                    allRegionsResponse.json()
                 ])
 
                 if (!active) {
@@ -34,6 +40,8 @@ export function SplatLibraryProvider({ children }) {
 
                 setNodes(nodesData)
                 setRegions(regionsData)
+                setAllNodes(allNodesData)
+                setAllRegions(allRegionsData)
                 setError('')
             } catch (loadError) {
                 if (!active) {
@@ -48,7 +56,7 @@ export function SplatLibraryProvider({ children }) {
             }
         }
 
-        loadSplats()
+        loadResults()
 
         return () => {
             active = false
@@ -56,7 +64,7 @@ export function SplatLibraryProvider({ children }) {
     }, [])
 
     return (
-        <SplatLibraryContext.Provider value={{ nodes, regions, error, loading, apiBaseUrl }}>
+        <SplatLibraryContext.Provider value={{ nodes, regions, error, loading, apiBaseUrl, allNodes, allRegions }}>
             {children}
         </SplatLibraryContext.Provider>
     )

@@ -4,12 +4,14 @@ import './App.css'
 import SplatViewer from './components/SplatViewer.jsx'
 import Home from './components/Home.jsx'
 import Upload from './components/Upload.jsx'
+import Nodes from './components/Nodes.jsx'
 import { SplatLibraryProvider } from './hooks/SplatLibraryProvider.jsx'
 import { useSplatLibrary } from './hooks/useSplatLibrary.js'
 import { GisLibraryProvider } from './hooks/GisLibraryProvider.jsx'
 import { useGisLibrary } from './hooks/useGisLibrary.js'
 import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion, IconUpload, IconLayers } from './components/icons.jsx'
 import { Analytics } from '@vercel/analytics/react'
+import Regions from './components/Regions.jsx'
 
 // Lazy so Leaflet and the GIS page stay out of the Home/Viewer chunk.
 const GisPage = lazy(() => import('./components/gis/GisPage.jsx'))
@@ -43,7 +45,7 @@ function Header() {
 }
 
 function Sidebar() {
-    const { nodes, regions } = useSplatLibrary()
+    const { nodes, regions, allNodes, allRegions } = useSplatLibrary()
     const { layers } = useGisLibrary()
 
     return (
@@ -64,33 +66,22 @@ function Sidebar() {
                 </NavLink>
                 <NavLink to="/gis" className={sideLinkClass}>
                     <IconLayers />
-                    <span>GIS layers</span>
+                    <span className="gv-side-flex">GIS layers</span>
+                    <span className="tag tag-neutral">{layers.length}</span>
                 </NavLink>
             </div>
             <div className="gv-side-group">
                 <span className="gv-side-label">Collections</span>
-                <div className="gv-side gv-side--static">
+                <NavLink to="/nodes" className={sideLinkClass}>
                     <IconNode />
                     <span className="gv-side-flex">Nodes</span>
-                    <span className="tag tag-neutral">{nodes.length}</span>
-                </div>
-                <div className="gv-side gv-side--static">
+                    <span className="tag tag-neutral">{allNodes.length}</span>
+                </NavLink>
+                <NavLink to="/regions" className={sideLinkClass}>
                     <IconRegion />
                     <span className="gv-side-flex">Regions</span>
-                    <span className="tag tag-neutral">{regions.length}</span>
-                </div>
-                <div className="gv-side gv-side--static">
-                    <IconLayers />
-                    <span className="gv-side-flex">GIS layers</span>
-                    <span className="tag tag-neutral">{layers.length}</span>
-                </div>
-            </div>
-            <div className="gv-backend">
-                <div className="gv-backend-title">Backend</div>
-                <div className="gv-backend-status">
-                    <span className="gv-pulse-dot" />
-                    Connected
-                </div>
+                    <span className="tag tag-neutral">{allRegions.length}</span>
+                </NavLink>
             </div>
         </aside>
     )
@@ -120,6 +111,8 @@ function App() {
                                             </Suspense>
                                         )}
                                     />
+                                    <Route path="/nodes" element={<Nodes />} />
+                                    <Route path="/regions" element={<Regions />} />
                                 </Routes>
                             </main>
                         </div>

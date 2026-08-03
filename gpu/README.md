@@ -51,6 +51,39 @@ and calls the webhook, which is what sets `model_path`.
 5. On `done`, the existing `/splat_nodes` + `/splat-url` path serves the new
    `model_path` — no viewer changes needed.
 
+## Georeferencing (EXIF GPS)
+
+A COLMAP reconstruction has arbitrary scale, position and orientation, which is
+why splats otherwise need hand-placing in the viewer. If the uploaded photos
+carry EXIF GPS, the worker solves that automatically:
+
+1. GPS is read from the **original** photos, before `ns-process-data` re-encodes
+   them (that re-encode can drop EXIF entirely).
+2. Those fixes are written as COLMAP's `ref_images.txt` and fed to
+   `colmap model_aligner --ref_is_gps 1 --alignment_type enu --estimate_scale 1`,
+   which fits a 7-DOF similarity by RANSAC.
+3. `transforms.json` is regenerated from the aligned model (`--skip-colmap`), so
+   training happens in ENU metres — 1 unit = 1 m, gravity-aligned, north-oriented
+   — rather than COLMAP's arbitrary frame.
+
+The webhook payload gains `georeferenced`, `gps_photos`, `total_photos`, and the
+`sim3` transform when it succeeds. **Surface the counts in the UI**: an unaligned
+splat looks identical to an aligned one until you try to measure it.
+
+Every step is best-effort. Fewer than 3 photos with GPS, a failed RANSAC fit, or
+a filename-mapping mismatch all leave the splat unaligned rather than failing
+the job.
+
+Two traps worth knowing:
+
+- **Altitude is ellipsoidal, not orthometric.** EXIF `GPSAltitude` is WGS84
+  height; LiDAR DEMs are geoid-referenced (NAVD88 etc.). The difference is tens
+  of metres and varies regionally. Use GPS for horizontal position and scale, and
+  take ground elevation from your own DEM.
+- **Absolute placement stays metre-sloppy** (phone GPS is 3–10 m, worse in urban
+  canyons). *Scale* comes out far better, since it is fitted across the whole
+  camera baseline rather than any single fix.
+
 ## Open items
 
 - **Splat format**: the worker exports nerfstudio's `.ply` (3DGS). Confirm this

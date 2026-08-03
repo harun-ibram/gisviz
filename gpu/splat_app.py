@@ -142,6 +142,196 @@ def _download_prefix(client, prefix: str, dest: str) -> int:
     return n
 
 
+# ---------------------------------------------------------------------------
+# Georeferencing (Phase 4b)
+#
+# A COLMAP reconstruction has arbitrary scale, position and orientation, which
+# is why the viewer has to hand-place every splat. If the photos carry EXIF GPS,
+# COLMAP can solve the 7-DOF similarity itself: `model_aligner` fits the sparse
+# model's camera centres to the GPS fixes and writes out an ENU model — metres,
+# gravity-aligned, north-oriented.
+#
+# Everything here is best-effort. Photos without GPS are the normal case for
+# screenshots and edited images, and a job must never fail because of it.
+# ---------------------------------------------------------------------------
+
+# COLMAP's own floor for a similarity fit. Three is a minimum, not a target —
+# scale accuracy comes from averaging over many cameras.
+MIN_GPS_IMAGES = 3
+
+# RANSAC inlier threshold, in metres. Phone GPS is 3-10 m horizontally and worse
+# in urban canyons, so a tight threshold would reject nearly every fix.
+GPS_RANSAC_MAX_ERROR_M = 5.0
+
+
+def _dms_to_degrees(dms) -> float:
+    """EXIF stores coordinates as a (degrees, minutes, seconds) rational triple."""
+    degrees, minutes, seconds = (float(part) for part in dms)
+    return degrees + minutes / 60.0 + seconds / 3600.0
+
+
+def _exif_gps(path: str):
+    """``(lat, lon, alt)`` in degrees/metres, or None when the photo has no fix."""
+    from PIL import Image
+    from PIL.ExifTags import GPSTAGS, IFD
+
+    try:
+        with Image.open(path) as img:
+            gps = img.getexif().get_ifd(IFD.GPSInfo)
+    except Exception:  # unreadable, or simply not an image with EXIF
+        return None
+    if not gps:
+        return None
+
+    tags = {GPSTAGS.get(key, key): value for key, value in gps.items()}
+    latitude, longitude = tags.get("GPSLatitude"), tags.get("GPSLongitude")
+    if not latitude or not longitude:
+        return None
+
+    # EXIF in the wild is malformed often enough that one odd tag must not take
+    # down a whole job: a photo we cannot read is simply a photo without a fix.
+    try:
+        lat = _dms_to_degrees(latitude)
+        if str(tags.get("GPSLatitudeRef", "N")).upper().startswith("S"):
+            lat = -lat
+        lon = _dms_to_degrees(longitude)
+        if str(tags.get("GPSLongitudeRef", "E")).upper().startswith("W"):
+            lon = -lon
+
+        # GPSAltitudeRef 1 means "below sea level". It is an EXIF BYTE, so
+        # Pillow hands it back as b'\x00'/b'\x01' rather than an int — int() on
+        # those bytes raises, which is why this is unpacked explicitly.
+        altitude_ref = tags.get("GPSAltitudeRef") or 0
+        if isinstance(altitude_ref, (bytes, bytearray)):
+            altitude_ref = altitude_ref[0] if altitude_ref else 0
+
+        # Note this is ellipsoidal height, not orthometric — see the README
+        # before trusting it against a LiDAR DEM.
+        altitude = float(tags.get("GPSAltitude") or 0.0)
+        if int(altitude_ref) == 1:
+            altitude = -altitude
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+    return lat, lon, altitude
+
+
+def _write_gps_reference(images_dir: str, processed_dir: str, dest: str) -> tuple[int, int]:
+    """
+    Write COLMAP's ``ref_images.txt`` (``name lat lon alt``) for every photo that
+    has a fix. Returns (photos with GPS, photos total).
+
+    Read from the *originals*, not the processed copies: ns-process-data
+    re-encodes into processed/images and that can drop EXIF entirely. The catch
+    is that it also renames them (frame_00001.*), and COLMAP knows the new names
+    — so pair the two directories by sorted order, which is the order
+    nerfstudio itself enumerates them in. If the counts disagree we cannot
+    associate them safely, so we give up rather than emit wrong coordinates.
+    """
+    originals = sorted(
+        name for name in os.listdir(images_dir)
+        if os.path.isfile(os.path.join(images_dir, name))
+    )
+    processed_images = os.path.join(processed_dir, "images")
+    if not os.path.isdir(processed_images):
+        return 0, len(originals)
+
+    renamed = sorted(
+        name for name in os.listdir(processed_images)
+        if os.path.isfile(os.path.join(processed_images, name))
+    )
+    if len(renamed) != len(originals):
+        print(
+            f"[gps] {len(originals)} source photos but {len(renamed)} processed — "
+            "cannot map names onto the COLMAP model, skipping alignment"
+        )
+        return 0, len(originals)
+
+    located = 0
+    with open(dest, "w") as handle:
+        for original, colmap_name in zip(originals, renamed):
+            fix = _exif_gps(os.path.join(images_dir, original))
+            if fix is None:
+                continue
+            located += 1
+            handle.write(f"{colmap_name} {fix[0]:.9f} {fix[1]:.9f} {fix[2]:.3f}\n")
+
+    return located, len(originals)
+
+
+def _georeference(work: str, images_dir: str, processed_dir: str) -> dict:
+    """
+    Align the COLMAP model to ENU metres from EXIF GPS, then regenerate
+    transforms.json from the aligned model so training happens in that frame.
+
+    Returns a summary for the webhook. Never raises: on any problem the caller
+    carries on with the unaligned (arbitrary-scale) pipeline.
+    """
+    summary = {"georeferenced": False, "gps_photos": 0, "total_photos": 0}
+
+    sparse_dir = os.path.join(processed_dir, "colmap", "sparse", "0")
+    if not os.path.isdir(sparse_dir):
+        summary["reason"] = "no COLMAP sparse model to align"
+        return summary
+
+    ref_path = os.path.join(work, "ref_images.txt")
+    located, total = _write_gps_reference(images_dir, processed_dir, ref_path)
+    summary["gps_photos"] = located
+    summary["total_photos"] = total
+
+    if located < MIN_GPS_IMAGES:
+        summary["reason"] = f"only {located}/{total} photos carry EXIF GPS"
+        print(f"[gps] {summary['reason']} — leaving the splat unaligned")
+        return summary
+
+    aligned_dir = os.path.join(processed_dir, "colmap", "sparse", "aligned")
+    os.makedirs(aligned_dir, exist_ok=True)
+    transform_path = os.path.join(work, "sim3.txt")
+
+    try:
+        subprocess.run(
+            ["colmap", "model_aligner",
+             "--input_path", sparse_dir,
+             "--output_path", aligned_dir,
+             "--ref_images_path", ref_path,
+             "--ref_is_gps", "1",
+             # ENU = the local East-North-Up metric frame: 1 unit = 1 m, +Z up,
+             # +Y north. Exactly the frame the building mesh is built in.
+             "--alignment_type", "enu",
+             "--estimate_scale", "1",
+             "--robust_alignment", "1",
+             "--robust_alignment_max_error", str(GPS_RANSAC_MAX_ERROR_M),
+             "--min_common_images", str(MIN_GPS_IMAGES),
+             "--transform_path", transform_path],
+            check=True,
+        )
+        # Regenerating transforms.json is the step that actually matters: without
+        # it the aligned model sits on disk unused and training still runs in
+        # COLMAP's arbitrary frame. --skip-colmap reuses the aligned model
+        # instead of re-running SfM; --skip-image-processing avoids re-encoding
+        # every photo a second time.
+        subprocess.run(
+            ["ns-process-data", "images", "--data", images_dir,
+             "--output-dir", processed_dir,
+             "--skip-colmap", "--skip-image-processing",
+             "--colmap-model-path", os.path.join("colmap", "sparse", "aligned")],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # A failed fit is a normal outcome with sloppy GPS — carry on unaligned.
+        summary["reason"] = f"model_aligner failed: {exc}"
+        print(f"[gps] {summary['reason']} — leaving the splat unaligned")
+        return summary
+
+    if os.path.exists(transform_path):
+        with open(transform_path) as handle:
+            summary["sim3"] = handle.read().strip()
+
+    summary["georeferenced"] = True
+    print(f"[gps] aligned to ENU from {located}/{total} photos with EXIF GPS")
+    return summary
+
+
 def _post_webhook(webhook_url: str, payload: dict) -> None:
     import requests
 
@@ -186,6 +376,11 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
              "--output-dir", processed_dir],
             check=True,
         )
+        # 1b) Georeference from EXIF GPS, if the photos carry any. Best-effort:
+        # when it succeeds the splat is trained in ENU metres instead of
+        # COLMAP's arbitrary frame, so the viewer needs no hand-placement.
+        georeference = _georeference(work, images_dir, processed_dir)
+
         # 2) Train the Gaussian splat. Headless flag so it exits when done.
         # `splatfacto-w-light`, not `splatfacto-w`: the full method's dataparser
         # is hard-wired to the NeRF-W phototourism captures — it reads
@@ -226,8 +421,15 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
             raise RuntimeError("Export finished but no .ply was produced")
 
         # 4) Upload the splat to R2 and tell the backend to set model_path.
+        # The georeference summary rides along so the UI can say "N of M photos
+        # had GPS" rather than silently serving an unscaled model, and so the
+        # Sim3 is persisted next to the splat it belongs to.
         client.upload_file(plys[0], os.environ["R2_BUCKET_NAME"], output_key)
-        _post_webhook(webhook_url, {"status": "done", "output_key": output_key})
+        _post_webhook(webhook_url, {
+            "status": "done",
+            "output_key": output_key,
+            **georeference,
+        })
     except Exception as exc:  # always fire a webhook so the job never hangs
         _post_webhook(webhook_url, {"status": "failed", "error": str(exc)})
         raise

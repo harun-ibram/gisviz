@@ -4,6 +4,7 @@ import './App.css'
 import SplatViewer from './components/SplatViewer.jsx'
 import Home from './components/Home.jsx'
 import Upload from './components/Upload.jsx'
+import Nodes from './components/Nodes.jsx'
 import { SplatLibraryProvider } from './hooks/SplatLibraryProvider.jsx'
 import { useSplatLibrary } from './hooks/useSplatLibrary.js'
 import { GisLibraryProvider } from './hooks/GisLibraryProvider.jsx'
@@ -69,28 +70,21 @@ function Sidebar() {
             </div>
             <div className="gv-side-group">
                 <span className="gv-side-label">Collections</span>
-                <div className="gv-side gv-side--static">
+                <NavLink to="/nodes" className={sideLinkClass}>
                     <IconNode />
                     <span className="gv-side-flex">Nodes</span>
                     <span className="tag tag-neutral">{nodes.length}</span>
-                </div>
-                <div className="gv-side gv-side--static">
+                </NavLink>
+                <NavLink to="/regions" className={sideLinkClass}>
                     <IconRegion />
                     <span className="gv-side-flex">Regions</span>
                     <span className="tag tag-neutral">{regions.length}</span>
-                </div>
-                <div className="gv-side gv-side--static">
+                </NavLink>
+                <NavLink to="/layers" className={sideLinkClass}>
                     <IconLayers />
                     <span className="gv-side-flex">GIS layers</span>
                     <span className="tag tag-neutral">{layers.length}</span>
-                </div>
-            </div>
-            <div className="gv-backend">
-                <div className="gv-backend-title">Backend</div>
-                <div className="gv-backend-status">
-                    <span className="gv-pulse-dot" />
-                    Connected
-                </div>
+                </NavLink>
             </div>
         </aside>
     )
@@ -120,6 +114,7 @@ function App() {
                                             </Suspense>
                                         )}
                                     />
+                                    <Route path="/nodes" element={<Nodes />} />
                                 </Routes>
                             </main>
                         </div>

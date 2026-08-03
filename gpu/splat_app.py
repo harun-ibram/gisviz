@@ -92,7 +92,23 @@ image = (
         "rm -rf /tmp/colmap",
     )
     .pip_install("torch==2.1.2", "torchvision==0.16.2", index_url="https://download.pytorch.org/whl/cu118")
-    .pip_install("nerfstudio", "boto3", "requests")
+    # pandas is imported by splatfacto-w's phototourism dataparser but is not a
+    # nerfstudio dependency, and plugin discovery has no try/except — a missing
+    # import there takes down every `ns-train` invocation, not just that method.
+    .pip_install("nerfstudio", "pandas", "boto3", "requests")
+    # Splatfacto-W (appearance embeddings for photos shot under varying light /
+    # with transient occluders). Not on PyPI, and the checkout has to stay: its
+    # PLY exporter lives at the repo root, outside the installed package.
+    .run_commands(
+        "git clone --depth 1 https://github.com/KevinXu02/splatfacto-w.git /opt/splatfacto-w",
+        "pip install --no-deps -e /opt/splatfacto-w",
+        # An unregistered method is not a hard error in ns-train — tyro just
+        # reports every following flag as "unrecognized", which reads like a
+        # syntax problem. Catch it at image build instead.
+        'python -c "from nerfstudio.plugins.registry import discover_methods;'
+        " m = discover_methods()[0];"
+        ' assert \'splatfacto-w-light\' in m, sorted(m)"',
+    )
 )
 
 
@@ -171,8 +187,14 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
             check=True,
         )
         # 2) Train the Gaussian splat. Headless flag so it exits when done.
+        # `splatfacto-w-light`, not `splatfacto-w`: the full method's dataparser
+        # is hard-wired to the NeRF-W phototourism captures — it reads
+        # <data>/dense/sparse/*.bin and a train/test split .tsv whose name is a
+        # Literal of "brandenburg|trevi|sacre". The light variant is the same
+        # appearance model on nerfstudio's normal dataparser, so it consumes
+        # ns-process-data output as-is.
         subprocess.run(
-            ["ns-train", "splatfacto-w", "--data", processed_dir,
+            ["ns-train", "splatfacto-w-light", "--data", processed_dir,
              "--output-dir", train_dir,
              "--viewer.quit-on-train-completion", "True"],
             check=True,
@@ -181,9 +203,22 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
         configs = glob.glob(os.path.join(train_dir, "**", "config.yml"), recursive=True)
         if not configs:
             raise RuntimeError("Training finished but no config.yml was produced")
+        # Not `ns-export gaussian-splat`: it asserts isinstance(model,
+        # SplatfactoModel) and SplatfactoWModel derives straight from Model.
+        # The plugin's own exporter bakes one camera's appearance embedding into
+        # per-gaussian SH; the background model is dropped since no PLY viewer
+        # understands it.
+        #
+        # --camera_idx is not optional in practice. The model defaults
+        # self.camera_idx = 0 in populate_modules, but export_script.py declares
+        # `camera_idx: Optional[int] = None` and calls set_camera_idx()
+        # unconditionally — so omitting the flag overwrites that 0 with None and
+        # the shs_0 property dies on torch.tensor(None). 0 = bake in the first
+        # training photo's lighting; any valid training index works.
         subprocess.run(
-            ["ns-export", "gaussian-splat", "--load-config", configs[0],
-             "--output-dir", export_dir],
+            ["python", "/opt/splatfacto-w/export_script.py",
+             "--load_config", configs[0], "--output_dir", export_dir,
+             "--camera_idx", "0"],
             check=True,
         )
         plys = glob.glob(os.path.join(export_dir, "**", "*.ply"), recursive=True)

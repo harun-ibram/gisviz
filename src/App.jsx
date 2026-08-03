@@ -66,7 +66,8 @@ function Sidebar() {
                 </NavLink>
                 <NavLink to="/gis" className={sideLinkClass}>
                     <IconLayers />
-                    <span>GIS layers</span>
+                    <span className="gv-side-flex">GIS layers</span>
+                    <span className="tag tag-neutral">{layers.length}</span>
                 </NavLink>
             </div>
             <div className="gv-side-group">
@@ -80,11 +81,6 @@ function Sidebar() {
                     <IconRegion />
                     <span className="gv-side-flex">Regions</span>
                     <span className="tag tag-neutral">{allRegions.length}</span>
-                </NavLink>
-                <NavLink to="/layers" className={sideLinkClass}>
-                    <IconLayers />
-                    <span className="gv-side-flex">GIS layers</span>
-                    <span className="tag tag-neutral">{layers.length}</span>
                 </NavLink>
             </div>
         </aside>

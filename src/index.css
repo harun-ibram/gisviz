@@ -1,16 +1,30 @@
-/* First, so our dark overrides at the end of App.css (imported by App.jsx, and
-   therefore later) win at equal specificity without !important. */
-@import 'leaflet/dist/leaflet.css';
-@import './theme/nocturne.css';
-
 :root {
   color-scheme: dark;
+  font-family: 'Trebuchet MS', 'Verdana', 'Segoe UI', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: rgba(239, 246, 255, 0.94);
+  background:
+    radial-gradient(circle at top, rgba(138, 217, 255, 0.08), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(255, 179, 117, 0.08), transparent 24%),
+    linear-gradient(180deg, #060b14 0%, #02050b 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
+  margin: 0;
   min-width: 320px;
+  min-height: 100vh;
+  background: inherit;
 }
 
 #root {
-  height: 100vh;
+  min-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
 }

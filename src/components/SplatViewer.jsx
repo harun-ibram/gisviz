@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
-import * as THREE from 'three'
-import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
-import OSMViewer from './OSMViewer.jsx'
-import { getFileExtension, getFileName } from '../utils.jsx'
-import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx'
+  import { useEffect, useRef, useState } from 'react'
+  import { useLocation } from 'react-router-dom'
+  import * as THREE from 'three'
+  import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
+  import OSMViewer from './OSMViewer.jsx'
+  import { toPublicUrl } from '../utils.jsx'
 
   // Where the splat is parked and where the camera starts. The zoom readout is
   // measured between the two, so they have to agree — hence one definition each
@@ -49,64 +48,63 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
     const [remoteSource, setRemoteSource] = useState(null) // { url, name }
     const [status, setStatus] = useState('Waiting for file upload')
     const [error, setError] = useState('')
-    const [zoom, setZoom] = useState(3.2)
-    const [mapOpen, setMapOpen] = useState(true)
-    const routeSplatName = location.state?.name ?? getFileName(location.state?.modelPath)
-    const selectedSplatName = selectedFile?.name ?? remoteSource?.name ?? routeSplatName
-    const viewerTitle = selectedSplatName ?? 'No splat loaded'
-
-    useEffect(() => {
-      document.title = 'Visualizer'
-    }, [])
+    const [zoom, setZoom] = useState(1)
 
     // Pick up a model path passed via navigation state (e.g. from Home)
-    const API_URL = import.meta.env.VITE_API_URL
+    useEffect(() => {
+      const modelPath = location.state?.modelPath
 
-  useEffect(() => {
-    const modelPath = location.state?.modelPath
-
-    if (!modelPath) {
-      return undefined
-    }
-
-    let active = true
-
-    const fetchSplatUrl = async () => {
-      setError('')
-      setStatus('Loading...')
-
-      try {
-        const res = await fetch(`${API_URL}/splat-url?path=${encodeURIComponent(modelPath)}`)
-
-        if (!res.ok) {
-          throw new Error(`Unable to fetch splat URL (${res.status})`)
-        }
-
-        const data = await res.json()
-
-        if (!active) {
-          return
-        }
-
-        setRemoteSource({ url: data.url, name: data.filename })
-      } catch (fetchError) {
-        if (!active) {
-          return
-        }
-
-        const message = fetchError instanceof Error ? fetchError.message : 'Unable to load that file.'
-        console.error('[SplatViewer] load error:', message)
-        setError(message)
-        setStatus('Upload a file')
+      if (!modelPath) {
+        return undefined
       }
-    }
 
-    fetchSplatUrl()
+      let active = true
 
-    return () => {
-      active = false
-    }
-  }, [location.state])
+      const buildFileFromPath = async () => {
+        setError('')
+        setStatus('Loading...')
+
+        const url = toPublicUrl(modelPath)
+        console.log('[SplatViewer] fetching model from:', url)
+
+        try {
+          const response = await fetch(url, { cache: 'no-store' })
+
+          console.log('[SplatViewer] fetch response:', response.status, response.url)
+
+          if (!response.ok) {
+            throw new Error(`Unable to fetch ${url} (${response.status})`)
+          }
+
+          const blob = await response.blob()
+          console.log('[SplatViewer] blob size:', blob.size, 'type:', blob.type)
+
+          const name = modelPath.split('/').pop()
+          const file = new File([blob], name, { type: blob.type })
+
+          if (!active) {
+            return
+          }
+
+          setSelectedFile(file)
+        } catch (fetchError) {
+          if (!active) {
+            return
+          }
+
+          const message = fetchError instanceof Error ? fetchError.message : 'Unable to load that file.'
+          console.error('[SplatViewer] load error:', message)
+          setError(message)
+          setStatus('Upload a file')
+        }
+      }
+
+      buildFileFromPath()
+
+      return () => {
+        active = false
+      }
+    }, [location.state])
 
     useEffect(() => {
       const stage = stageRef.current
@@ -338,7 +336,7 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
         setStatus('Loading...')
 
         const fileName = source.kind === 'file' ? source.file.name : source.name
-        const extension = getFileExtension(fileName)
+        const extension = fileName?.split('.').pop()?.toLowerCase()
 
         if (extension !== 'ply' && extension !== 'splat') {
           if (!active) {
@@ -357,7 +355,7 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
             const arrayBuffer = await source.file.arrayBuffer()
             bytes = new Uint8Array(arrayBuffer)
           } else {
-            const response = await fetch(source.url, { cache: "no-store" })
+            const response = await fetch(toPublicUrl(source.url), { cache: "no-store" })
 
             if (!response.ok) {
               throw new Error(`Unable to fetch ${fileName} (${response.status})`)
@@ -401,6 +399,7 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
           }
 
           const message = loadError instanceof Error ? loadError.message : 'Unable to load that file.'
+          console.log("We're cooked D:")
           setError(message)
           setStatus('Upload a file')
         }
@@ -496,72 +495,16 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
           <div className="status-row">
             <span>Status:</span>
             <span className="pill">{status}</span>
-      <section className="gv-viewer">
-        <div className="gv-viewer-toolbar">
-          <div className="gv-viewer-title-block">
-            <div className="card-kicker">Visualizer</div>
-            <div className="gv-viewer-title">{viewerTitle}</div>
           </div>
 
-          <label className="btn btn-secondary gv-upload-btn">
-            <IconUpload />
-            Upload .ply / .splat
-            <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
-          </label>
-
-          <div className="gv-zoom-group" aria-label="Zoom controls">
-            <button type="button" className="gv-tool gv-tool--sm" onClick={() => handleZoom(-1)} aria-label="Zoom out">
-              <IconMinus />
-            </button>
-            <span className="gv-zoom-value">{zoom.toFixed(1)}x</span>
-            <button type="button" className="gv-tool gv-tool--sm" onClick={() => handleZoom(1)} aria-label="Zoom in">
-              <IconPlus />
-            </button>
-          </div>
-
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ borderColor: mapOpen ? 'var(--color-accent)' : 'var(--color-divider)' }}
-            onClick={() => setMapOpen((open) => !open)}
-          >
-            <IconMap />
-            {mapOpen ? 'Hide map' : 'Show map'}
-          </button>
-
-          <div className="gv-status-group">
-            <span className="text-muted gv-status-label">Status</span>
-            <span className="tag tag-accent">{status}</span>
-          </div>
+          {error ? <p className="status-error">{error}</p> : null}
         </div>
 
-        <div
-          className="gv-stage-grid"
-          style={{ gridTemplateColumns: mapOpen ? 'minmax(0,1fr) 320px' : 'minmax(0,1fr)' }}
-        >
-          <div className="gv-stage-panel" aria-label="Spark splat preview" onWheel={handleScroll}>
-            <div className="gv-stage" ref={stageRef} />
-            {error ? <div className="gv-stage-alert">{error}</div> : null}
-            <div className="gv-stage-hint">
-              <span className="gv-stage-hint-dot" />
-              Drag to orbit · scroll to zoom · Gaussian splat preview
-            </div>
-          </div>
-
-          {mapOpen ? (
-            <div className="gv-map-panel">
-              <div className="gv-map-panel-head">
-                <span className="gv-map-panel-title">Location · map.osm</span>
-                <button type="button" className="gv-tool gv-tool--sm" onClick={() => setMapOpen(false)} aria-label="Hide map">
-                  <IconClose />
-                </button>
-              </div>
-              <div className="gv-map-panel-body">
-                <OSMViewer className="gv-map-canvas" />
-              </div>
-            </div>
-          ) : null}
+        <div className="stage-card" aria-label="Spark splat preview" onWheel={handleScroll}>
+          <div className="stage" ref={stageRef} />
+          <OSMViewer className="map-card map-card-overlay" />
         </div>
+
       </section>
     )
   }

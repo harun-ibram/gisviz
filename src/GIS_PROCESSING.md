@@ -12,6 +12,7 @@ public/output_hh.tif  process_raster.py   data_output/gis/*_4326.tif        publ
 public/*.laz          process_lidar.py    public/overlays/*.png  + bounds   public.raster_layers
 public/ro.json        process_vectors.py  data_output/gis/regions_4326.geojson  public.regions
 data/map.osm          process_vectors.py  data_output/gis/osm_{buildings,roads}_4326.geojson
+DSM + DEM + footprints building_heights.py data_output/gis/*_heights_4326.geojson
 ```
 
 These scripts live in `src/` alongside the FastAPI app: `gis_worker.py` imports
@@ -45,6 +46,43 @@ lon/lat) to clip to a sub-area at read time and keep the output small.
 
 Each writes reprojected GeoTIFFs / GeoJSON to `data_output/gis/`, PNG overlays
 to `public/overlays/`, and a metadata sidecar (bounds + elevation stats).
+
+## Building heights and volumes
+
+`building_heights.py` combines a LiDAR DSM/DEM pair with OSM building footprints
+to derive a height and a volume per building. The point cloud is a *measurement*
+source here — what gets drawn on the map is the footprint polygon, extruded by
+the height derived below.
+
+```bash
+# Both rasters must come from the same tile at the same --cell, or the grids
+# will not line up (the script checks and refuses a mismatched pair).
+python process_lidar.py tile.laz --kind dsm --cell 1.0 --id t_dsm
+python process_lidar.py tile.laz --kind dem --cell 1.0 --id t_dem
+python process_vectors.py city.osm.pbf --bbox MIN_LON MIN_LAT MAX_LON MAX_LAT
+
+python building_heights.py \
+    --dsm data_output/gis/t_dsm_native.tif \
+    --dem data_output/gis/t_dem_native.tif \
+    --buildings data_output/gis/city_buildings_4326.geojson
+```
+
+Pass the **`*_native.tif`**, not the `*_4326.tif`. Zonal maths runs in the
+raster's native metric CRS because areas and volumes computed in degrees are
+meaningless; a geographic raster is rejected rather than silently measured.
+
+Ground is the 10th percentile of the DEM in a 2 m ring *outside* the footprint
+(the interpolated ground under a building is the least trustworthy part of the
+surface); roof is the 75th percentile of the DSM inside it. Percentiles rather
+than min/max: chimneys and antennas wreck a MAX, one stray low return wrecks a
+MIN. Tune with `--ring`, `--ground-percentile`, `--roof-percentile`.
+
+Each feature gains `ground_m`, `roof_m`, `height_m`, `footprint_area_m2`,
+`volume_prism_m3`, `volume_lidar_m3`, `coverage` and `cell_count`. The two
+volumes are a free correctness signal — `prism` is `area x height`, `lidar`
+integrates every cell, so they agree on flat roofs and diverge on pitched ones.
+Footprints with less than 30% valid LiDAR cover get a **null** height rather
+than a misleading `0`, so the map can render "no data" distinctly.
 
 ## Load into PostGIS (Step 1 integration)
 

@@ -49,7 +49,11 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
     const [remoteSource, setRemoteSource] = useState(null) // { url, name }
     const [status, setStatus] = useState('Waiting for file upload')
     const [error, setError] = useState('')
-    const [zoom, setZoom] = useState(3.2)
+    // 1 = the framing the scene loads at. `dolly` reports zoom as
+    // INITIAL_DISTANCE / distance, so this is a multiplier, not the camera's
+    // z position — seeding it with the old 3.2 made the readout open at "3.2x"
+    // before the user had touched anything.
+    const [zoom, setZoom] = useState(1)
     const [mapOpen, setMapOpen] = useState(true)
     const routeSplatName = location.state?.name ?? getFileName(location.state?.modelPath)
     const selectedSplatName = selectedFile?.name ?? remoteSource?.name ?? routeSplatName
@@ -457,45 +461,6 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
     }
 
     return (
-      <section className="viewer-panel viewer-panel-splat">
-        <div className="copy">
-          <h1>GIS Visualizer</h1>
-          <p className="description">Upload a local .ply or .splat file to render it.</p>
-
-          <div className="controls-row">
-            <label className="upload-card">
-              <span className="upload-label">🗋 Choose splat file</span>
-              <input type="file" accept=".ply,.splat" onChange={handleFileChange} />
-            </label>
-            <div className="zoom-controls" aria-label="Zoom controls">
-              <button
-                type="button"
-                className="zoom-button"
-                aria-label="Zoom out"
-                onClick={() => dolly(-BUTTON_STEPS)}
-              >
-                −
-              </button>
-              <span className="zoom-value">{zoom.toFixed(1)}x</span>
-              <button
-                type="button"
-                className="zoom-button"
-                aria-label="Zoom in"
-                onClick={() => dolly(BUTTON_STEPS)}
-              >
-                +
-              </button>
-            </div>
-          </div>
-
-          <p className="description">
-            Drag to rotate · scroll to zoom · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move
-            · <kbd>E</kbd>/<kbd>Q</kbd> up and down · hold <kbd>Shift</kbd> to move faster
-          </p>
-
-          <div className="status-row">
-            <span>Status:</span>
-            <span className="pill">{status}</span>
       <section className="gv-viewer">
         <div className="gv-viewer-toolbar">
           <div className="gv-viewer-title-block">
@@ -510,11 +475,11 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
           </label>
 
           <div className="gv-zoom-group" aria-label="Zoom controls">
-            <button type="button" className="gv-tool gv-tool--sm" onClick={() => handleZoom(-1)} aria-label="Zoom out">
+            <button type="button" className="gv-tool gv-tool--sm" onClick={() => dolly(-BUTTON_STEPS)} aria-label="Zoom out">
               <IconMinus />
             </button>
             <span className="gv-zoom-value">{zoom.toFixed(1)}x</span>
-            <button type="button" className="gv-tool gv-tool--sm" onClick={() => handleZoom(1)} aria-label="Zoom in">
+            <button type="button" className="gv-tool gv-tool--sm" onClick={() => dolly(BUTTON_STEPS)} aria-label="Zoom in">
               <IconPlus />
             </button>
           </div>
@@ -544,7 +509,8 @@ import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx
             {error ? <div className="gv-stage-alert">{error}</div> : null}
             <div className="gv-stage-hint">
               <span className="gv-stage-hint-dot" />
-              Drag to orbit · scroll to zoom · Gaussian splat preview
+              Drag to orbit · scroll to zoom · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move
+              · <kbd>E</kbd>/<kbd>Q</kbd> up and down · <kbd>Shift</kbd> to sprint
             </div>
           </div>
 

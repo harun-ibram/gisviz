@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
+import { useAuth } from '../hooks/useAuth.js'
+import SignInNotice from './auth/SignInNotice.jsx'
 import { IconArrowRight, IconClose, IconNode, IconRegion, IconSearch, IconUpload } from './icons.jsx'
 
 const POLL_INTERVAL_MS = 3000
@@ -135,6 +137,7 @@ function TargetRow({ item, active, onSelect }) {
 
 function Upload() {
     const { apiBaseUrl } = useSplatLibrary()
+    const { isAuthed, getToken, handleUnauthorized } = useAuth()
 
     const [mode, setMode] = useState('existing') // 'existing' | 'new'
     const [targetType, setTargetType] = useState('node') // 'node' | 'region'
@@ -256,7 +259,9 @@ function Upload() {
         ? Boolean(selectedId)
         : Boolean(newName.trim()) && (targetType === 'region' || (newLat !== '' && newLon !== ''))
 
-    const canProcess = targetReady && files.length > 0 && !running
+    // The client gate is UX, not security — the three POSTs below are still
+    // rejected by the backend without a token.
+    const canProcess = targetReady && files.length > 0 && !running && isAuthed
 
     const reset = () => {
         setRunning(false)
@@ -295,6 +300,25 @@ function Upload() {
         setError('')
         setResult(null)
 
+        // Built once so the three write calls below stay identical. Deliberately
+        // not applied to the presigned R2 PUTs in uploadOne(): an Authorization
+        // header there breaks the S3 signature and the upload 403s.
+        const token = getToken()
+        const authHeaders = token ? { Authorization: `Bearer ${token}` } : {}
+
+        // A token that expired mid-session should open the login popup rather
+        // than surface as a raw error string.
+        const checkWrite = (response, message) => {
+            if (response.status === 401) {
+                handleUnauthorized()
+                throw new Error('Your session expired. Sign in again to continue.')
+            }
+
+            if (!response.ok) {
+                throw new Error(message)
+            }
+        }
+
         try {
             let type = targetType
             let id = selectedId
@@ -310,13 +334,11 @@ function Upload() {
 
                 const createResponse = await fetch(`${apiBaseUrl}/${targetType}s`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...authHeaders },
                     body: JSON.stringify(body),
                 })
 
-                if (!createResponse.ok) {
-                    throw new Error(`Unable to create ${targetType} (${createResponse.status})`)
-                }
+                checkWrite(createResponse, `Unable to create ${targetType} (${createResponse.status})`)
 
                 const created = await createResponse.json()
                 id = String(targetType === 'node' ? created.node_id : created.id)
@@ -327,7 +349,7 @@ function Upload() {
 
             const jobResponse = await fetch(`${apiBaseUrl}/jobs`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
                 body: JSON.stringify({
                     target_type: type,
                     target_id: id,
@@ -335,9 +357,7 @@ function Upload() {
                 }),
             })
 
-            if (!jobResponse.ok) {
-                throw new Error(`Unable to create job (${jobResponse.status})`)
-            }
+            checkWrite(jobResponse, `Unable to create job (${jobResponse.status})`)
 
             const { job_id: jobId, upload_urls: uploadUrls } = await jobResponse.json()
 
@@ -356,11 +376,12 @@ function Upload() {
 
             setStatus('Starting job…')
 
-            const startResponse = await fetch(`${apiBaseUrl}/jobs/${jobId}/start`, { method: 'POST' })
+            const startResponse = await fetch(`${apiBaseUrl}/jobs/${jobId}/start`, {
+                method: 'POST',
+                headers: authHeaders,
+            })
 
-            if (!startResponse.ok) {
-                throw new Error(`Unable to start job (${startResponse.status})`)
-            }
+            checkWrite(startResponse, `Unable to start job (${startResponse.status})`)
 
             setStatus('Processing (this can take a while)…')
 
@@ -591,6 +612,8 @@ function Upload() {
                     {notice ? <p className="text-muted gv-job-notice">{notice}</p> : null}
 
                     {error ? <p className="gv-library-error">{error}</p> : null}
+
+                    {!isAuthed && !result ? <SignInNotice /> : null}
 
                     {result ? (
                         <Link

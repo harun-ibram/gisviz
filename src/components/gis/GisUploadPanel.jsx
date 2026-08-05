@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useGisLibrary } from '../../hooks/useGisLibrary.js'
+import { useAuth } from '../../hooks/useAuth.js'
+import SignInNotice from '../auth/SignInNotice.jsx'
 import {
     dedupeByName,
     defaultOptions,
@@ -28,6 +30,8 @@ export default function GisUploadPanel({ typeId, prefillBbox = null }) {
         submitGisJob,
         queueFull,
     } = useGisLibrary()
+
+    const { isAuthed } = useAuth()
 
     const type = useMemo(() => getGisType(typeId), [typeId])
 
@@ -77,7 +81,9 @@ export default function GisUploadPanel({ typeId, prefillBbox = null }) {
     }
 
     const busy = phase !== 'idle'
-    const canSubmit = files.length > 0 && problems.length === 0 && !busy && !queueFull
+    // The panel stays mounted and browsable while signed out; only submit is
+    // gated, and the backend is still the real gate.
+    const canSubmit = files.length > 0 && problems.length === 0 && !busy && !queueFull && isAuthed
 
     const handleSubmit = async () => {
         setSubmitError('')
@@ -199,6 +205,8 @@ export default function GisUploadPanel({ typeId, prefillBbox = null }) {
             {queueFull ? <p className="gv-library-error">{queueFullMessage(config)}</p> : null}
 
             {submitError ? <p className="gv-library-error">{submitError}</p> : null}
+
+            {!isAuthed ? <SignInNotice /> : null}
 
             <button
                 type="button"

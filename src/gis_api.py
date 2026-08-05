@@ -12,12 +12,13 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
 
+from auth import RequireUser
 from deps import SessionDep, get_signed_url, get_upload_url
 from gis_runtime import (
     ACCEPTED_EXTENSIONS,
@@ -37,21 +38,13 @@ router = APIRouter(prefix="/gis", tags=["gis"])
 
 
 # ---------------------------------------------------------------------------
-# Optional auth
+# Auth
 # ---------------------------------------------------------------------------
-def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
-    """
-    Guards every mutating /gis route when GIS_API_KEY is set.
-
-    Unset by default, matching the rest of this API — but worth setting before a
-    public launch, since anyone can otherwise occupy the single worker slot and
-    fill the bucket.
-    """
-    if CONFIG.api_key and x_api_key != CONFIG.api_key:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
-
-
-Protected = Depends(require_api_key)
+# Every mutating /gis route requires a logged-in user; the GETs stay public so
+# the map keeps working for anonymous visitors. This replaces the old optional
+# X-API-Key check, which nothing in the repo ever sent and which was a no-op
+# whenever GIS_API_KEY was unset (i.e. by default).
+Protected = RequireUser
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +419,8 @@ async def get_gis_config() -> dict[str, Any]:
         "max_queue": CONFIG.max_queue,
         "url_ttl_seconds": CONFIG.url_ttl,
         "defaults": {k: dict(v) for k, v in DEFAULT_OPTIONS.items()},
+        # Lets the frontend discover the gate instead of hardcoding it.
+        "auth_required": True,
     }
 
 

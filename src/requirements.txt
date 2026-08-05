@@ -8,6 +8,10 @@ python-dotenv==1.2.2
 boto3==1.43.54
 modal==1.5.3
 
+# Login (src/auth.py): HS256 bearer tokens + password hashing.
+PyJWT==2.13.0
+bcrypt==5.0.0
+
 # GIS processing (scripts/gis/*) — pinned to exactly what the working backend/
 # venv has. scripts/gis/requirements.txt uses >= ranges, which are fine on a dev
 # box but would let a future Railway rebuild pull a new GDAL major unannounced.

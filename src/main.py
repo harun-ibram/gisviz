@@ -13,6 +13,8 @@ from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
+from auth import RequireUser, ensure_auth_schema
+from auth_api import router as auth_router
 from deps import SessionDep, engine, get_signed_url, get_upload_url, r2_client  # noqa: F401
 from gis_api import router as gis_router
 from gis_runtime import slugify
@@ -33,16 +35,23 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Bring the GIS schema up to date and clear jobs a restart abandoned.
+    Bring the GIS and auth schemas up to date and clear jobs a restart abandoned.
 
-    Both steps are best-effort: a DDL problem must never take the whole API
-    down with it, and everything outside /gis works fine without them.
+    Every step is best-effort: a DDL problem must never take the whole API
+    down with it, and the public read-only surface works fine without them.
     """
     if os.environ.get("GIS_AUTO_MIGRATE", "1") != "0":
         try:
             ensure_gis_schema(engine)
         except Exception:
             logger.warning("GIS schema bootstrap failed; /gis may not work", exc_info=True)
+
+        # Same flag rather than a second knob: both are "let the app create its
+        # own tables on boot", and nobody wants to remember two of them.
+        try:
+            ensure_auth_schema(engine)
+        except Exception:
+            logger.warning("Auth schema bootstrap failed; logins may not work", exc_info=True)
 
     try:
         # Railway kills in-flight BackgroundTasks on redeploy, so anything left
@@ -64,6 +73,7 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+app.include_router(auth_router)
 app.include_router(gis_router)
 
 
@@ -133,7 +143,7 @@ class CreateNodeRequest(BaseModel):
     lon: float
 
 
-@app.post("/nodes")
+@app.post("/nodes", dependencies=[RequireUser])
 async def create_node(body: CreateNodeRequest, session: SessionDep):
     """Create a bare node (point + name tag) to attach a splat to later."""
     row = session.exec(
@@ -162,7 +172,7 @@ class CreateRegionRequest(BaseModel):
     name: str
 
 
-@app.post("/regions")
+@app.post("/regions", dependencies=[RequireUser])
 async def create_region(body: CreateRegionRequest, session: SessionDep):
     """Create a bare region (name only, no boundary yet) to attach a splat to later."""
     region = Region(id=str(uuid.uuid4()), name=body.name, geom=None)
@@ -238,7 +248,7 @@ class WebhookRequest(BaseModel):
     error: str | None = None
 
 
-@app.post("/jobs")
+@app.post("/jobs", dependencies=[RequireUser])
 async def create_job(body: CreateJobRequest, session: SessionDep):
     """Create a job and hand back presigned PUT URLs to upload the photos to R2."""
     if body.target_type not in ("node", "region"):
@@ -274,7 +284,7 @@ def _target_name(job: Job, session: Session) -> str | None:
     return region.name if region else None
 
 
-@app.post("/jobs/{job_id}/start")
+@app.post("/jobs/{job_id}/start", dependencies=[RequireUser])
 async def start_job(job_id: str, session: SessionDep):
     """Kick off the GPU job on Modal once the photos have been uploaded."""
     import modal  # lazy import: keep the API importable even if modal is absent

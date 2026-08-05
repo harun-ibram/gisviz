@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useGisLibrary } from '../../hooks/useGisLibrary.js'
+import { useAuth } from '../../hooks/useAuth.js'
 import { describeJobError, JOB_STEPS, STATUS_LABELS, stepIndex } from '../../gis/gisErrors.js'
 import { formatBytes, formatDuration } from '../../gis/gisFormat.js'
 import { getGisType } from '../../gis/gisConfig.js'
@@ -56,7 +57,7 @@ function JobSteps({ step, log }) {
     )
 }
 
-function ErrorCard({ job, config, onRetry, retryable, retrying }) {
+function ErrorCard({ job, config, onRetry, retryable, retrying, isAuthed }) {
     const { title, detail, retry } = describeJobError(job, config)
 
     return (
@@ -68,7 +69,8 @@ function ErrorCard({ job, config, onRetry, retryable, retrying }) {
                 <button
                     type="button"
                     className="btn btn-primary btn-block"
-                    disabled={retrying}
+                    disabled={retrying || !isAuthed}
+                    title={isAuthed ? undefined : 'Sign in to retry'}
                     onClick={() => onRetry(retry.patch ?? {})}
                 >
                     {retrying ? 'Retrying…' : retry.label}
@@ -105,6 +107,8 @@ export default function GisJobRail() {
         jobs,
         setActiveJobId,
     } = useGisLibrary()
+
+    const { isAuthed } = useAuth()
 
     const [busy, setBusy] = useState('')
     const [actionError, setActionError] = useState('')
@@ -199,7 +203,8 @@ export default function GisJobRail() {
                 <button
                     type="button"
                     className="btn btn-primary btn-block"
-                    disabled={busy !== ''}
+                    disabled={busy !== '' || !isAuthed}
+                    title={isAuthed ? undefined : 'Sign in to start'}
                     onClick={run('start', () => startExistingJob(job.job_id))}
                 >
                     {busy === 'start' ? 'Starting…' : 'Retry start'}
@@ -212,6 +217,7 @@ export default function GisJobRail() {
                     config={config}
                     retryable={retryable}
                     retrying={busy === 'retry'}
+                    isAuthed={isAuthed}
                     onRetry={(patch) => run('retry', () => retryJob(job.job_id, patch))()}
                 />
             ) : null}
@@ -224,7 +230,8 @@ export default function GisJobRail() {
                 <button
                     type="button"
                     className="btn btn-secondary btn-block"
-                    disabled={busy !== ''}
+                    disabled={busy !== '' || !isAuthed}
+                    title={isAuthed ? undefined : 'Sign in to cancel'}
                     onClick={run('cancel', () => abortJob(job.job_id))}
                 >
                     {busy === 'cancel' ? 'Cancelling…' : 'Cancel job'}

@@ -7,8 +7,10 @@ import Upload from './components/Upload.jsx'
 import Nodes from './components/Nodes.jsx'
 import { SplatLibraryProvider } from './hooks/SplatLibraryProvider.jsx'
 import { useSplatLibrary } from './hooks/useSplatLibrary.js'
+import { AuthProvider } from './hooks/AuthProvider.jsx'
 import { GisLibraryProvider } from './hooks/GisLibraryProvider.jsx'
 import { useGisLibrary } from './hooks/useGisLibrary.js'
+import AuthCorner from './components/auth/AuthCorner.jsx'
 import { IconLogo, IconLibrary, IconVisualizer, IconNode, IconRegion, IconUpload, IconLayers } from './components/icons.jsx'
 import { Analytics } from '@vercel/analytics/react'
 import Regions from './components/Regions.jsx'
@@ -91,34 +93,42 @@ function App() {
     return (
         <BrowserRouter>
             <SplatLibraryProvider>
-                {/* Nests inside: the GIS provider reads apiBaseUrl from the splat
-                    context, and Sidebar needs its layer count. */}
-                <GisLibraryProvider>
-                    <div className="gv-shell">
-                        <Header />
-                        <div className="gv-body">
-                            <Sidebar />
-                            <main className="gv-main">
-                                <Routes>
-                                    <Route path="/" element={<Home />} />
-                                    <Route path="/viewer" element={<SplatViewer />} />
-                                    <Route path="/upload" element={<Upload />} />
-                                    <Route
-                                        path="/gis"
-                                        element={(
-                                            <Suspense fallback={<div className="gv-library"><p className="text-muted">Loading map…</p></div>}>
-                                                <GisPage />
-                                            </Suspense>
-                                        )}
-                                    />
-                                    <Route path="/nodes" element={<Nodes />} />
-                                    <Route path="/regions" element={<Regions />} />
-                                </Routes>
-                            </main>
+                {/* Inside the splat provider because apiBaseUrl only comes from
+                    there; outside the GIS one because the GIS API needs the
+                    token. The splat provider itself issues public GETs only. */}
+                <AuthProvider>
+                    {/* Nests inside: the GIS provider reads apiBaseUrl from the splat
+                        context, and Sidebar needs its layer count. */}
+                    <GisLibraryProvider>
+                        <div className="gv-shell">
+                            <Header />
+                            <div className="gv-body">
+                                <Sidebar />
+                                <main className="gv-main">
+                                    <Routes>
+                                        <Route path="/" element={<Home />} />
+                                        <Route path="/viewer" element={<SplatViewer />} />
+                                        <Route path="/upload" element={<Upload />} />
+                                        <Route
+                                            path="/gis"
+                                            element={(
+                                                <Suspense fallback={<div className="gv-library"><p className="text-muted">Loading map…</p></div>}>
+                                                    <GisPage />
+                                                </Suspense>
+                                            )}
+                                        />
+                                        <Route path="/nodes" element={<Nodes />} />
+                                        <Route path="/regions" element={<Regions />} />
+                                    </Routes>
+                                </main>
+                            </div>
                         </div>
-                    </div>
-                    <Analytics />
-                </GisLibraryProvider>
+                        {/* Outside .gv-shell: it is overflow:hidden and would clip a
+                            fixed child. */}
+                        <AuthCorner />
+                        <Analytics />
+                    </GisLibraryProvider>
+                </AuthProvider>
             </SplatLibraryProvider>
         </BrowserRouter>
     )

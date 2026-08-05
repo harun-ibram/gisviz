@@ -1257,3 +1257,105 @@
 .gv-gis-map-canvas[data-basemap="osm"] .leaflet-tile-pane {
   filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
 }
+
+/* — auth — */
+
+/* Leaflet puts its panes at 200-700 and .leaflet-control at 800, so a dialog
+   opened from the corner button while /gis is mounted would otherwise paint
+   under the map controls. nocturne declares no z-index on .dialog-backdrop and
+   must not be edited; App.css loads last, so setting it here also fixes the
+   existing delete-confirm dialog. */
+.dialog-backdrop { z-index: 1100; }
+
+/* Sibling of .gv-shell, which is overflow:hidden and would clip this. */
+.gv-auth-corner {
+  position: fixed;
+  left: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.gv-auth-fab {
+  position: relative;
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--shadow-md);
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+
+.gv-auth-fab--in {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  color: var(--color-accent);
+}
+
+/* Sits on the button's edge rather than in its flow, so the icon stays centred. */
+.gv-auth-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+}
+
+.gv-auth-pop {
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - var(--space-8)));
+  padding: var(--space-3);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.gv-auth-pop-email {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.gv-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.gv-auth-secret {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.gv-auth-secret .input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* .btn-block would push the button onto its own line and lose the sentence. */
+.gv-auth-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  font-size: 13px;
+}
+
+/* Below this the 236px sidebar is gone and the main column runs full width, so
+   the corner would sit over content rather than beside it. */
+@media (max-width: 860px) {
+  .gv-auth-corner {
+    left: var(--space-3);
+    bottom: var(--space-3);
+  }
+
+  .gv-auth-fab {
+    width: 30px;
+    height: 30px;
+  }
+}

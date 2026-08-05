@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useGisLibrary } from '../../hooks/useGisLibrary.js'
+import { useAuth } from '../../hooks/useAuth.js'
 import { GIS_TYPES } from '../../gis/gisConfig.js'
 import { formatCount, formatNumber, formatRelativeTime } from '../../gis/gisFormat.js'
 import { isRasterLayer } from '../../gis/gisGeo.js'
@@ -20,7 +21,7 @@ function layerMeta(layer) {
     return `${formatCount(layer.feature_count ?? 0)} features`
 }
 
-function LayerRow({ layer, visible, opacity, onToggle, onOpacity, onZoom, onSelect, onDelete, selected }) {
+function LayerRow({ layer, visible, opacity, onToggle, onOpacity, onZoom, onSelect, onDelete, selected, canDelete }) {
     const Icon = isRasterLayer(layer) ? IconRaster : IconPoints
 
     return (
@@ -80,8 +81,9 @@ function LayerRow({ layer, visible, opacity, onToggle, onOpacity, onZoom, onSele
                     type="button"
                     className="gv-tool gv-tool--sm"
                     onClick={onDelete}
+                    disabled={!canDelete}
                     aria-label={`Delete ${layer.name}`}
-                    title="Delete layer"
+                    title={canDelete ? 'Delete layer' : 'Sign in to delete'}
                 >
                     <IconClose />
                 </button>
@@ -106,6 +108,8 @@ export default function GisLayerLibrary() {
         refreshLayers,
         viewBbox,
     } = useGisLibrary()
+
+    const { isAuthed } = useAuth()
 
     const [search, setSearch] = useState('')
     const [typeFilter, setTypeFilter] = useState([])
@@ -266,6 +270,7 @@ export default function GisLayerLibrary() {
                                 onZoom={() => requestFit([layer.bounds])}
                                 onSelect={() => setSelectedLayerId(layer.layer_id)}
                                 onDelete={() => setConfirmDelete(layer)}
+                                canDelete={isAuthed}
                             />
                         ))}
                     </div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { GisLibraryContext } from './gisLibraryContext.js'
 import { useSplatLibrary } from './useSplatLibrary.js'
+import { useAuth } from './useAuth.js'
 import { makeGisApi } from '../gis/gisApi.js'
 import { FALLBACK_GIS_CONFIG, serializeOptions } from '../gis/gisConfig.js'
 import { isTerminal } from '../gis/gisErrors.js'
@@ -121,7 +122,15 @@ export function GisLibraryProvider({ children }) {
     // The one permitted source of the base URL — this file never reads
     // import.meta.env.
     const { apiBaseUrl } = useSplatLibrary()
-    const api = useMemo(() => makeGisApi(apiBaseUrl), [apiBaseUrl])
+
+    // Both callbacks are useCallback-stable and the token is read through a
+    // ref, so signing in or out does not churn this memo — and therefore does
+    // not restart the poll loop or re-fetch the layer list.
+    const { getToken, handleUnauthorized } = useAuth()
+    const api = useMemo(
+        () => makeGisApi(apiBaseUrl, { getToken, onUnauthorized: handleUnauthorized }),
+        [apiBaseUrl, getToken, handleUnauthorized],
+    )
 
     // Read once at mount. State rather than a ref so nothing touches a ref
     // during render.

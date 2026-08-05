@@ -114,7 +114,6 @@ class GisConfig:
     max_bytes: dict[str, int]
     url_ttl: int
     slot_timeout: int
-    api_key: str | None
     input_prefix: str = "gis/inputs"
     output_prefix: str = "gis/outputs"
 
@@ -138,7 +137,6 @@ def _load_config() -> GisConfig:
         },
         url_ttl=_env_int("GIS_URL_TTL", 3600),
         slot_timeout=_env_int("GIS_SLOT_TIMEOUT", 1800),
-        api_key=os.environ.get("GIS_API_KEY") or None,
     )
 
 

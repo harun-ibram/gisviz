@@ -263,6 +263,37 @@ function Upload() {
     // rejected by the backend without a token.
     const canProcess = targetReady && files.length > 0 && !running && isAuthed
 
+    // Which gate is closed, in the order the form is filled in. A submit button
+    // that greys out for an unstated reason reads as a broken button, so every
+    // condition on canProcess says its own name — the same reasoning as the GIS
+    // panel's `problems` list and queueFullMessage. The signed-out case is left
+    // to SignInNotice, which says it better and carries the sign-in action.
+    const blockedReason = () => {
+        if (!isAuthed) {
+            return ''
+        }
+
+        if (!targetReady) {
+            if (mode === 'existing') {
+                return `Pick a ${targetType} to upload into.`
+            }
+
+            if (!newName.trim()) {
+                return `Name the new ${targetType}.`
+            }
+
+            return 'Give the new node a latitude and longitude.'
+        }
+
+        if (files.length === 0) {
+            return 'Add at least one photo.'
+        }
+
+        return ''
+    }
+
+    const blocked = running ? '' : blockedReason()
+
     const reset = () => {
         setRunning(false)
         setStatus('')
@@ -614,6 +645,8 @@ function Upload() {
                     {error ? <p className="gv-library-error">{error}</p> : null}
 
                     {!isAuthed && !result ? <SignInNotice /> : null}
+
+                    {blocked && !result ? <p className="text-muted gv-job-notice">{blocked}</p> : null}
 
                     {result ? (
                         <Link

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
 import OSMViewer from './OSMViewer.jsx'
 import { getFileExtension, getFileName } from '../utils.jsx'
@@ -38,6 +39,149 @@ const CLICK_SLOP_PX = 4
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
+// ---------------------------------------------------------------------------
+// Buildings (Phase 4a)
+//
+// LiDAR-measured footprints, extruded into a metrically correct mesh: the scene
+// is a local ENU frame where 1 three.js unit = 1 metre, east is +X, north is
+// -Z and up is +Y. Distances in here are real, so the FPS camera's 2.2 units/s
+// is a walking pace and a 12 m building is 12 units tall.
+//
+// The splat is NOT in this frame. COLMAP output has arbitrary scale and
+// orientation, so until a georeferenced splat carries the Sim3 that Phase 4b
+// solves, the two are simply different spaces that happen to share an origin.
+// ---------------------------------------------------------------------------
+const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
+
+const METRES_PER_DEGREE_LAT = 111320
+
+// Volume classes, matching the minimap's ramp so the same building reads the
+// same colour in both views. Merged per class, so this is 5 draw calls for the
+// whole city rather than one per building.
+const BUILDING_COLOURS = ['#3987e5', '#256abf', '#184f95', '#0d366b']
+const NO_DATA_COLOUR = '#a8a49a'
+
+// Footprints with no usable LiDAR cover have no height to extrude. They are
+// still drawn, as a thin slab, so "we have this building but not its height"
+// is visible rather than silently absent.
+const UNMEASURED_HEIGHT_M = 0.4
+
+const outerRings = (geometry) => {
+  if (!geometry) return []
+  if (geometry.type === 'Polygon') return [geometry.coordinates[0]]
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates.map((part) => part[0])
+  return []
+}
+
+const volumeOf = (properties) =>
+  properties?.volume_lidar_m3 ?? properties?.volume_prism_m3 ?? null
+
+const volumeBreaks = (volumes) => {
+  const sorted = volumes.filter((v) => v !== null && v > 0).sort((a, b) => a - b)
+  if (sorted.length === 0) return null
+  const at = (f) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))]
+  return [at(0.25), at(0.5), at(0.75)]
+}
+
+const classOf = (volume, breaks) => {
+  if (volume === null || breaks === null) return 0
+  if (volume <= breaks[0]) return 0
+  if (volume <= breaks[1]) return 1
+  if (volume <= breaks[2]) return 2
+  return 3
+}
+
+/**
+ * Build one merged mesh per volume class from a GeoJSON FeatureCollection.
+ *
+ * Returns { group, centre, radius, measured, total } or null. `centre` is the
+ * lon/lat the frame is anchored at — every vertex is metres from it, which
+ * keeps coordinates small enough for float32 to stay precise (raw WGS84
+ * degrees scaled to metres would be ~5e6 and visibly jitter).
+ */
+const buildBuildingMesh = (features) => {
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity
+  for (const feature of features) {
+    for (const ring of outerRings(feature.geometry)) {
+      for (const [lon, lat] of ring) {
+        minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon)
+        minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat)
+      }
+    }
+  }
+  if (!Number.isFinite(minLon)) return null
+
+  const originLon = (minLon + maxLon) / 2
+  const originLat = (minLat + maxLat) / 2
+  const metresPerLon = METRES_PER_DEGREE_LAT * Math.cos((originLat * Math.PI) / 180)
+
+  const breaks = volumeBreaks(features.map((f) => volumeOf(f.properties)))
+  const byClass = BUILDING_COLOURS.map(() => [])
+  const unmeasured = []
+  let measured = 0
+
+  for (const feature of features) {
+    const properties = feature.properties ?? {}
+    const height = properties.height_m
+    const hasHeight = height !== null && height !== undefined && height > 0
+    if (hasHeight) measured += 1
+
+    for (const ring of outerRings(feature.geometry)) {
+      if (ring.length < 4) continue
+
+      const shape = new THREE.Shape()
+      ring.forEach(([lon, lat], index) => {
+        const east = (lon - originLon) * metresPerLon
+        const north = (lat - originLat) * METRES_PER_DEGREE_LAT
+        if (index === 0) shape.moveTo(east, north)
+        else shape.lineTo(east, north)
+      })
+
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth: hasHeight ? height : UNMEASURED_HEIGHT_M,
+        bevelEnabled: false,
+      })
+      // ExtrudeGeometry pushes along +Z with the shape in XY. Rotating -90°
+      // about X turns that into "footprint on the ground, height along +Y",
+      // and maps the shape's north axis onto -Z — the ENU convention.
+      geometry.rotateX(-Math.PI / 2)
+
+      if (hasHeight) byClass[classOf(volumeOf(properties), breaks)].push(geometry)
+      else unmeasured.push(geometry)
+    }
+  }
+
+  const group = new THREE.Group()
+  const addBatch = (geometries, colour, opacity) => {
+    if (geometries.length === 0) return
+    // One draw call per class. Merging also disposes the need to keep
+    // thousands of Mesh objects alive for the renderer to walk every frame.
+    const merged = mergeGeometries(geometries, false)
+    geometries.forEach((geometry) => geometry.dispose())
+    if (!merged) return
+    merged.computeVertexNormals()
+    group.add(new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
+      color: new THREE.Color(colour),
+      roughness: 0.85,
+      metalness: 0.0,
+      transparent: opacity < 1,
+      opacity,
+    })))
+  }
+
+  byClass.forEach((geometries, index) => addBatch(geometries, BUILDING_COLOURS[index], 1))
+  addBatch(unmeasured, NO_DATA_COLOUR, 0.55)
+
+  const halfWidth = ((maxLon - minLon) * metresPerLon) / 2
+  const halfDepth = ((maxLat - minLat) * METRES_PER_DEGREE_LAT) / 2
+  return {
+    group,
+    radius: Math.max(Math.hypot(halfWidth, halfDepth), 10),
+    measured,
+    total: features.length,
+  }
+}
+
 // Don't steal keystrokes from a form control the user is actually typing in.
 const isTypingTarget = (target) =>
   Boolean(target?.closest?.('input, textarea, select, [contenteditable="true"]'))
@@ -57,7 +201,10 @@ const isTypingTarget = (target) =>
     // accumulating into Euler angles is what keeps pitch clampable and roll at
     // exactly zero.
     const lookRef = useRef({ yaw: 0, pitch: 0 })
+    const buildingsRef = useRef(null)
     const [pointerLocked, setPointerLocked] = useState(false)
+    const [buildingsOn, setBuildingsOn] = useState(false)
+    const [buildingsInfo, setBuildingsInfo] = useState(null) // { measured, total } | 'empty' | error
     const [selectedFile, setSelectedFile] = useState(null)
     const [remoteSource, setRemoteSource] = useState(null) // { url, name }
     const [status, setStatus] = useState('Waiting for file upload')
@@ -133,7 +280,10 @@ const isTypingTarget = (target) =>
       const scene = new THREE.Scene()
       scene.background = new THREE.Color(0x07111f)
 
-      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
+      // Far plane in metres, because the building mesh is metric: a city block
+      // is hundreds of units across and the framing camera sits hundreds back,
+      // so the old 100 clipped the entire scene away.
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000)
       // YXZ = yaw about world Y, then pitch about the camera's own X. The
       // default XYZ order would let roll creep in as soon as both are non-zero.
       camera.rotation.order = 'YXZ'
@@ -487,6 +637,81 @@ const isTypingTarget = (target) =>
       }
     }, [selectedFile, remoteSource])
 
+    // Back off far enough to see the whole extent, looking slightly down. At 1
+    // unit = 1 metre the default camera sits 4.5 m from the origin, which is
+    // usually *inside* a building — without this the feature looks broken.
+    const frameBuildings = () => {
+      const camera = cameraRef.current
+      const built = buildingsRef.current
+      if (!camera || !built) return
+
+      const distance = built.radius * 1.9
+      camera.position.set(0, Math.max(built.radius * 0.7, 25), distance)
+      lookRef.current.yaw = 0
+      lookRef.current.pitch = -Math.atan2(camera.position.y, distance)
+      camera.rotation.set(lookRef.current.pitch, lookRef.current.yaw, 0)
+      setZoom(INITIAL_DISTANCE / camera.position.distanceTo(SPLAT_POSITION))
+    }
+
+    // Fetch and build the mesh the first time buildings are switched on, then
+    // just toggle its visibility — re-extruding a city on every click would
+    // stall the render loop for seconds.
+    useEffect(() => {
+      if (!buildingsOn) {
+        if (buildingsRef.current) buildingsRef.current.group.visible = false
+        return undefined
+      }
+      if (buildingsRef.current) {
+        buildingsRef.current.group.visible = true
+        frameBuildings()
+        return undefined
+      }
+
+      let active = true
+      fetch(`${apiBaseUrl}/gis/buildings?limit=4000&measured_only=false`)
+        .then((response) => {
+          if (!response.ok) throw new Error(`Unable to load buildings (${response.status})`)
+          return response.json()
+        })
+        .then((collection) => {
+          const scene = sceneRef.current
+          if (!active || !scene) return
+          const built = buildBuildingMesh(collection.features ?? [])
+          if (!built) {
+            setBuildingsInfo({ kind: 'empty' })
+            return
+          }
+          scene.add(built.group)
+          buildingsRef.current = built
+          setBuildingsInfo({ kind: 'ready', measured: built.measured, total: built.total })
+          frameBuildings()
+        })
+        .catch((fetchError) => {
+          if (!active) return
+          setBuildingsInfo({
+            kind: 'error',
+            message: fetchError instanceof Error ? fetchError.message : 'Unable to load buildings.',
+          })
+        })
+
+      return () => {
+        active = false
+      }
+    }, [buildingsOn])
+
+    // Geometry and materials are not garbage collected by three — they hold GPU
+    // resources that have to be released explicitly.
+    useEffect(() => () => {
+      const built = buildingsRef.current
+      if (!built) return
+      built.group.traverse((child) => {
+        child.geometry?.dispose()
+        child.material?.dispose()
+      })
+      sceneRef.current?.remove(built.group)
+      buildingsRef.current = null
+    }, [])
+
     const handleFileChange = (event) => {
       const file = event.target.files?.[0]
 
@@ -547,11 +772,24 @@ const isTypingTarget = (target) =>
             <button type="button" className="gv-tool gv-tool--sm" onClick={() => dolly(-BUTTON_STEPS)} aria-label="Zoom out">
               <IconMinus />
             </button>
-            <span className="gv-zoom-value">{zoom.toFixed(1)}x</span>
+            {/* Two decimals below 0.1: framing the building mesh puts the
+                camera hundreds of metres out, where one decimal renders every
+                value as a broken-looking "0.0x". */}
+            <span className="gv-zoom-value">{zoom < 0.1 ? zoom.toFixed(2) : zoom.toFixed(1)}x</span>
             <button type="button" className="gv-tool gv-tool--sm" onClick={() => dolly(BUTTON_STEPS)} aria-label="Zoom in">
               <IconPlus />
             </button>
           </div>
+
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ borderColor: buildingsOn ? 'var(--color-accent)' : 'var(--color-divider)' }}
+            onClick={() => setBuildingsOn((on) => !on)}
+            title="LiDAR-measured building footprints, extruded at true metric scale"
+          >
+            {buildingsOn ? 'Hide buildings' : 'Show buildings'}
+          </button>
 
           <button
             type="button"
@@ -576,6 +814,17 @@ const isTypingTarget = (target) =>
           <div className="gv-stage-panel" aria-label="Spark splat preview" onWheel={handleScroll}>
             <div className="gv-stage" ref={stageRef} />
             {error ? <div className="gv-stage-alert">{error}</div> : null}
+            {/* Shares the alert slot with the splat error, so it yields to it. */}
+            {buildingsOn && buildingsInfo && !error ? (
+              <div className="gv-stage-alert gv-stage-alert--info">
+                {buildingsInfo.kind === 'ready'
+                  ? `${buildingsInfo.measured} of ${buildingsInfo.total} buildings measured · 1 unit = 1 m · not aligned to the splat`
+                  : buildingsInfo.kind === 'empty'
+                    ? 'No measured buildings yet — upload a LiDAR tile and an OSM extract.'
+                    : buildingsInfo.message}
+              </div>
+            ) : null}
+
             <div className="gv-stage-hint">
               <span className="gv-stage-hint-dot" />
               {pointerLocked ? (

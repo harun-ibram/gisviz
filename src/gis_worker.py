@@ -211,6 +211,151 @@ def _safe_import(module_name: str):
 
 
 # ---------------------------------------------------------------------------
+# Building heights
+#
+# Heights need a LiDAR DSM/DEM pair and OSM footprints covering the same ground,
+# and those arrive as two separate uploads in either order. So both sides look
+# for their counterpart in the library once their own layers are indexed: upload
+# a tile then an extract, or an extract then a tile, and the measurement happens
+# on the second one either way.
+#
+# Every step is best-effort. No counterpart, no overlap, or a failed measurement
+# all leave the job successful with its layers intact — heights are a bonus on
+# top of the layer the user actually asked for.
+# ---------------------------------------------------------------------------
+_BBOX_KEYS = ("min_lon", "min_lat", "max_lon", "max_lat")
+
+
+def _bbox_params(bounds: list[float] | None) -> dict[str, float] | None:
+    if not bounds or len(bounds) != 4:
+        return None
+    return dict(zip(_BBOX_KEYS, (float(v) for v in bounds)))
+
+
+def _find_overlapping_buildings(bounds: list[float] | None) -> tuple[str, str] | None:
+    """Newest indexed buildings layer intersecting `bounds` -> (layer_id, key)."""
+    params = _bbox_params(bounds)
+    if params is None:
+        return None
+    sql = text(
+        """
+        SELECT id, geojson_key
+        FROM public.vector_layers
+        WHERE sublayer = 'buildings'
+          AND bounds IS NOT NULL
+          AND geojson_key IS NOT NULL
+          AND ST_Intersects(
+                bounds,
+                ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    with engine.begin() as conn:
+        row = conn.execute(sql, params).first()
+    return (row[0], row[1]) if row else None
+
+
+def _find_overlapping_lidar(bounds: list[float] | None) -> tuple[str, str, str] | None:
+    """Newest LiDAR layer with *both* metric surfaces -> (layer_id, dem, dsm)."""
+    params = _bbox_params(bounds)
+    if params is None:
+        return None
+    sql = text(
+        """
+        SELECT id, properties ->> 'native_dem', properties ->> 'native_dsm'
+        FROM public.raster_layers
+        WHERE layer_type = 'lidar'
+          AND properties ->> 'native_dem' IS NOT NULL
+          AND properties ->> 'native_dsm' IS NOT NULL
+          AND bounds IS NOT NULL
+          AND ST_Intersects(
+                bounds,
+                ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    with engine.begin() as conn:
+        row = conn.execute(sql, params).first()
+    return (row[0], row[1], row[2]) if row else None
+
+
+def _measure_buildings(
+    job_id: str,
+    layer_type: str,
+    layers: list[LayerResult],
+    processors,
+    work_root: Path,
+) -> str | None:
+    """
+    Measure heights for whatever this job just made, if its counterpart exists.
+
+    Returns a line for the job log, or None when there was nothing to do.
+    """
+    dem = dsm = footprints = None
+    raster_layer_id = vector_layer_id = None
+
+    if layer_type == "lidar":
+        layer = layers[0]
+        dem = layer.artifacts.get("native_dem.tif")
+        dsm = layer.artifacts.get("native_dsm.tif")
+        # The surface the user asked for is under its generic name.
+        if layer.kind == "dem":
+            dem = dem or layer.artifacts.get("native.tif")
+        elif layer.kind == "dsm":
+            dsm = dsm or layer.artifacts.get("native.tif")
+        raster_layer_id = layer.layer_id
+
+        if not (dem and dsm):
+            return "[heights] skipped — this tile yielded only one surface"
+
+        match = _find_overlapping_buildings(layer.bounds4326)
+        if not match:
+            return "[heights] skipped — no building footprints cover this tile yet"
+        vector_layer_id, key = match
+        footprints = work_root / "counterpart_buildings.geojson"
+        r2_download(key, footprints)
+
+    elif layer_type == "osm":
+        layer = next((item for item in layers if item.sublayer == "buildings"), None)
+        if layer is None:
+            return None
+        footprints = layer.artifacts.get("features.geojson")
+        vector_layer_id = layer.layer_id
+
+        match = _find_overlapping_lidar(layer.bounds4326)
+        if not match:
+            return "[heights] skipped — no LiDAR tile covers these footprints yet"
+        raster_layer_id, dem_key, dsm_key = match
+        dem = work_root / "counterpart_dem.tif"
+        dsm = work_root / "counterpart_dsm.tif"
+        r2_download(dem_key, dem)
+        r2_download(dsm_key, dsm)
+    else:
+        return None
+
+    if not (dem and dsm and footprints):
+        return None
+
+    measured = work_root / "buildings_heights_4326.geojson"
+    summary = processors.heights.process_buildings(dsm, dem, footprints, measured)
+    stored = processors.loader.upsert_buildings(
+        engine,
+        measured,
+        layer_id=vector_layer_id,
+        lidar_layer_id=raster_layer_id,
+        job_id=job_id,
+    )
+    return (
+        f"[heights] {summary['measured']}/{summary['buildings']} footprints measured, "
+        f"{stored} written to public.buildings "
+        f"(median {summary['height_m']['median']:.1f} m, "
+        f"{summary['total_volume_lidar_m3']:,.0f} m3 total)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Layer id generation (server-side only)
 # ---------------------------------------------------------------------------
 def _layer_id(layer_type: str, name: str, job_id: str, suffix: str | None = None) -> str:
@@ -270,11 +415,38 @@ def _handle_lidar(processors, ws, job, inputs: list[tuple[str, Path]]) -> list[L
     overlay = ws.root / "public" / layer.overlay_path.lstrip("/")
     artifacts = {"overlay.png": overlay, "wgs84.tif": geotiff}
 
-    native_rel = (layer.properties or {}).get("native_geotiff")
-    if native_rel:
-        native = ws.root / native_rel
-        if native.exists():
-            artifacts["native.tif"] = native
+    def _native_of(produced) -> Path | None:
+        relative = (produced.properties or {}).get("native_geotiff")
+        if not relative:
+            return None
+        path = ws.root / relative
+        return path if path.exists() else None
+
+    native = _native_of(layer)
+    if native:
+        artifacts["native.tif"] = native
+
+    # Grid the companion surface too. Building heights are DSM minus DEM, and
+    # both have to come off the same tile at the same cell size, so producing
+    # only the kind the user asked for would make the pair impossible to
+    # reconstruct later. It costs a second pass over the point cloud.
+    #
+    # Non-fatal by design: --kind dem legitimately fails on a cloud with no
+    # ground-classified returns, and that must not sink the layer the user
+    # actually asked for.
+    other = "dsm" if kind == "dem" else "dem"
+    try:
+        companion = processors.lidar.process_lidar(
+            src, f"{layer_id}_{other}", job["name"], other, cell
+        )
+        companion_native = _native_of(companion)
+        if companion_native:
+            artifacts[f"native_{other}.tif"] = companion_native
+    except Exception:
+        logger.info(
+            "GIS job %s: no %s companion surface (heights will need another tile)",
+            job["id"], other, exc_info=True,
+        )
 
     return [
         LayerResult(
@@ -666,9 +838,39 @@ def _run_job_locked(job_id: str, job: dict[str, Any]) -> None:
                     layer.size_bytes = size
                     layer.properties["size_bytes"] = size
             # The local repo-relative path the script recorded is meaningless to
-            # a client; replace it with the key that is.
+            # a client; replace it with the key that is. `native_dem`/`native_dsm`
+            # are how a later job finds the metric rasters it needs to measure
+            # building heights — the surface's own kind names the primary one.
             if "native.tif" in layer.keys:
                 layer.properties["native_geotiff"] = layer.keys["native.tif"]
+                if layer.kind in ("dem", "dsm"):
+                    layer.properties[f"native_{layer.kind}"] = layer.keys["native.tif"]
+            for artifact_name, key in layer.keys.items():
+                if artifact_name in ("native_dem.tif", "native_dsm.tif"):
+                    layer.properties[artifact_name[: -len(".tif")]] = key
+
+        # ---- building heights (best-effort) ------------------------------
+        # Before indexing, not after: _index_layers writes status='done' and the
+        # log in one transaction, so anything appended afterwards is never
+        # stored. Nothing here needs this job's own rows — the counterpart is
+        # always a layer some earlier job indexed — and the artifacts it does
+        # need are still on local disk until the workspace is torn down.
+        if layer_type in ("lidar", "osm"):
+            _set_step(job_id, "measuring", log)
+            try:
+                # Re-enter the workspace: building_heights writes through
+                # gis_common's path globals, which must stay rebound at the job
+                # directory rather than at the repo.
+                with gis_workspace(work_root):
+                    note = _measure_buildings(
+                        job_id, layer_type, layers, load_processors(), work_root
+                    )
+            except Exception:
+                logger.warning("GIS job %s: building heights failed", job_id, exc_info=True)
+                note = "[heights] failed — the layers above are unaffected"
+            if note:
+                log_lines.append(note)
+                log = "\n".join(log_lines + ([captured] if captured else []))
 
         # ---- index ------------------------------------------------------
         _set_step(job_id, "indexing", log)

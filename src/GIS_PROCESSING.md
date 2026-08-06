@@ -84,6 +84,35 @@ integrates every cell, so they agree on flat roofs and diverge on pitched ones.
 Footprints with less than 30% valid LiDAR cover get a **null** height rather
 than a misleading `0`, so the map can render "no data" distinctly.
 
+### Automatic measurement (the upload pipeline)
+
+Nothing above has to be run by hand for uploaded data. `gis_worker` measures
+heights on its own whenever a LiDAR tile and OSM footprints cover the same
+ground, in whichever order they arrive:
+
+* a **LiDAR** job now grids **both** surfaces from the tile — the kind you asked
+  for plus its companion — and stores each metric raster's R2 key as
+  `native_dem` / `native_dsm` on the layer. It then looks for building
+  footprints already in the library that intersect the tile.
+* an **OSM** job looks the other way, for a LiDAR layer carrying both surfaces
+  that intersects its footprints.
+
+Either way the match is measured and written to `public.buildings`, and the job
+log gains a `[heights] …` line. Upload a tile then an extract, or an extract then
+a tile — the second one triggers it.
+
+This is best-effort by design. No counterpart, no overlap, a tile with only one
+usable surface, or a failed measurement all leave the job **successful with its
+layers intact**; heights are a bonus on top of what the user actually asked for.
+
+Two costs worth knowing:
+
+* gridding both surfaces means a **second pass over the point cloud**, so LiDAR
+  jobs take roughly twice as long as before.
+* `--kind dem` legitimately fails on a cloud with no ground-classified returns.
+  That tile still produces its DSM layer, but it cannot measure heights on its
+  own and the log says so.
+
 ### Loading buildings into PostGIS
 
 ```bash

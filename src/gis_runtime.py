@@ -170,12 +170,16 @@ def _resolve_scripts_dir() -> Path:
 
 @dataclass(frozen=True)
 class Processors:
-    """The four script modules, once imported."""
+    """The script modules, once imported."""
 
     gc: ModuleType
     raster: ModuleType
     lidar: ModuleType
     vectors: ModuleType
+    # Building heights + the PostGIS upsert for them. Unlike the four above,
+    # these are only reached when a LiDAR tile and OSM footprints overlap.
+    heights: ModuleType
+    loader: ModuleType
     scripts_dir: Path
 
 
@@ -190,7 +194,9 @@ def load_processors() -> Processors:
     if path_entry not in sys.path:
         sys.path.insert(0, path_entry)
 
+    import building_heights
     import gis_common
+    import load_gis
     import process_lidar
     import process_raster
     import process_vectors
@@ -201,6 +207,8 @@ def load_processors() -> Processors:
         raster=process_raster,
         lidar=process_lidar,
         vectors=process_vectors,
+        heights=building_heights,
+        loader=load_gis,
         scripts_dir=scripts_dir,
     )
 

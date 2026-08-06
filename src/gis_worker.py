@@ -192,11 +192,15 @@ def classify(exc: BaseException) -> tuple[str, str]:
     # out to be perfectly valid. The processing libraries are imported lazily,
     # so this only ever surfaces mid-job, never at boot.
     if isinstance(exc, ImportError):
-        missing = getattr(exc, "name", None) or message
+        # The message, not exc.name: for a C-extension import that fails on a
+        # missing shared object, `name` is the Python submodule ("_base") while
+        # the message names the actual library ("libexpat.so.1: cannot open
+        # shared object file") — which is the only part anyone can act on.
+        detail = message or getattr(exc, "name", None) or "unknown"
         return (
             "dependency_missing",
-            f"The server is missing a processing dependency ({missing}). This is a "
-            "deployment problem, not a problem with your file — retrying will not help.",
+            f"The server is missing a system library: {detail}. This is a deployment "
+            "problem, not a problem with your file — retrying will not help.",
         )
 
     for module_name, class_names, kind in (

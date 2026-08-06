@@ -75,10 +75,33 @@ image = (
         "trimesh", "pillow", "boto3", "requests",
     )
     .run_commands(
+        # --no-build-isolation below makes pip use *this* environment's build
+        # tools instead of provisioning its own, so they have to be here. Kept
+        # in this layer rather than the pip_install above so that fixing it does
+        # not invalidate the cached torch/PyTorch3D layers.
+        #
+        # The upper bound is load-bearing: setuptools >=81 drops pkg_resources,
+        # and torch 2.1's cpp_extension.py opens with `from pkg_resources import
+        # packaging`. Upgrading setuptools here therefore breaks the very builds
+        # this line exists to enable. The base image ships 68.1.2, which is fine
+        # — this pins that rather than trusting it to stay.
+        "pip install 'setuptools<70' wheel",
         f"git clone --recursive https://github.com/Anttwo/SuGaR.git {SUGAR_DIR}",
-        f"pip install {SUGAR_DIR}/gaussian_splatting/submodules/diff-gaussian-rasterization",
-        f"pip install {SUGAR_DIR}/gaussian_splatting/submodules/simple-knn",
-        "pip install git+https://github.com/NVlabs/nvdiffrast.git",
+        # --no-build-isolation is mandatory, not a preference. Both submodules
+        # do `from torch.utils.cpp_extension import CUDAExtension` at the top of
+        # setup.py, and PEP 517 builds them in a fresh venv holding only
+        # setuptools — so the torch installed above is invisible and the build
+        # dies with "No module named 'torch'" before it compiles anything.
+        f"pip install --no-build-isolation {SUGAR_DIR}/gaussian_splatting/submodules/diff-gaussian-rasterization",
+        f"pip install --no-build-isolation {SUGAR_DIR}/gaussian_splatting/submodules/simple-knn",
+        # Same flag again: nvdiffrast probes for torch while resolving its build
+        # requirements and aborts with its own "run pip install with
+        # --no-build-isolation" message otherwise. It is an optional dependency
+        # — SuGaR's textured-mesh export rasterizes with PyTorch3D
+        # (sugar_extractors/refined_mesh.py) and never reaches for it — so if
+        # this line ever becomes a maintenance burden, deleting it costs nothing
+        # on the path this pipeline actually takes.
+        "pip install --no-build-isolation git+https://github.com/NVlabs/nvdiffrast.git",
         # Both submodules compile CUDA against whatever torch is present. If the
         # arch list or FORCE_CUDA above ever drifts they fail silently at import
         # rather than at build, an hour into someone's job.

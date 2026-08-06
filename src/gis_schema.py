@@ -150,6 +150,21 @@ DDL_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_buildings_geom  ON public.buildings USING GIST (geom)",
     "CREATE INDEX IF NOT EXISTS idx_buildings_layer ON public.buildings (layer_id)",
     "CREATE INDEX IF NOT EXISTS idx_buildings_job   ON public.buildings (job_id)",
+    # ---- 6. splat pipeline: SuGaR mesh stage -----------------------------
+    # public.jobs itself is created by scripts/gis/schema.sql, not here — this
+    # only adds what the mesh stage introduced, so a deployed database picks the
+    # columns up on the next boot instead of needing a hand-run ALTER. Mirrors
+    # the Job / OSMNode / Region models in src/models.py.
+    "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS work_prefix       TEXT",
+    "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_key          TEXT",
+    "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_status       TEXT",
+    "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_error        TEXT",
+    "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_call_id      TEXT",
+    "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS inputs_deleted_at TIMESTAMPTZ",
+    "ALTER TABLE osm.nodes      ADD COLUMN IF NOT EXISTS mesh_path  TEXT",
+    "ALTER TABLE public.regions ADD COLUMN IF NOT EXISTS mesh_path  TEXT",
+    # model_path was on the Region model but never in regions' CREATE TABLE.
+    "ALTER TABLE public.regions ADD COLUMN IF NOT EXISTS model_path TEXT",
 ]
 
 

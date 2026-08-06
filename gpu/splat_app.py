@@ -16,9 +16,11 @@ Secrets (create in the Modal dashboard):
 """
 
 import glob
+import json
 import os
 import subprocess
 import tempfile
+from pathlib import Path
 
 import modal
 
@@ -343,6 +345,103 @@ def _post_webhook(webhook_url: str, payload: dict) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Mesh handoff (SuGaR)
+#
+# SuGaR runs as its own Modal app on its own image (gpu/sugar_app.py), so it
+# cannot see this container's disk. Anything it needs that is not already in R2
+# is staged under work/{job_id}/ for it to pull. The splat itself is not staged
+# — the mesh worker reads it back from the key we just uploaded to.
+#
+# What it does need is cameras, and SuGaR reads those from a `cameras.json` in
+# the 3DGS output directory rather than from COLMAP's sparse model. That is
+# convenient for one specific reason: splatfacto exports gaussians in
+# *nerfstudio's* world frame — COLMAP coordinates already put through the
+# dataparser transform and scale — not COLMAP's. Handing SuGaR cameras in that
+# same nerfstudio frame means the splat never has to be moved, which would mean
+# rotating its spherical harmonics, and the mesh lands in the frame the viewer
+# already places the .ply in, so the two coincide with no further work.
+#
+# dataparser_transforms.json rides along so a later step can map either artifact
+# back into COLMAP/ENU coordinates.
+# ---------------------------------------------------------------------------
+
+
+def _write_cameras_json(dataset, dest: str) -> int:
+    """
+    Write the training cameras in the Inria 3DGS `cameras.json` layout SuGaR
+    reads. Returns the number of cameras written.
+    """
+    import numpy as np
+
+    # nerfstudio cameras are OpenGL (x right, y up, z back). Inria's
+    # camera_to_JSON stores an OpenCV (x right, y down, z forward)
+    # camera-to-world rotation, so negate the last two basis vectors.
+    opengl_to_opencv = np.diag([1.0, -1.0, -1.0])
+
+    cameras = dataset.cameras
+    entries = []
+    for index, image_path in enumerate(dataset.image_filenames):
+        c2w = cameras.camera_to_worlds[index].cpu().numpy()
+        entries.append({
+            "id": index,
+            # SuGaR rebuilds this as os.path.join(image_dir, name + extension),
+            # so it must be the stem, not the filename.
+            "img_name": os.path.splitext(os.path.basename(str(image_path)))[0],
+            "width": int(cameras.width[index].item()),
+            "height": int(cameras.height[index].item()),
+            "position": c2w[:3, 3].tolist(),
+            "rotation": (c2w[:3, :3] @ opengl_to_opencv).tolist(),
+            "fx": float(cameras.fx[index].item()),
+            "fy": float(cameras.fy[index].item()),
+        })
+
+    with open(dest, "w") as handle:
+        json.dump(entries, handle)
+    return len(entries)
+
+
+def _stage_mesh_inputs(client, work: str, config_path: str, work_prefix: str) -> dict:
+    """
+    Stage everything gpu/sugar_app.py needs under ``work_prefix`` in R2.
+
+    Returns a summary for the webhook. Raising here would be actively harmful —
+    the splat is already uploaded by the time this runs — so the caller swallows
+    failures and the job simply completes without a mesh.
+    """
+    from nerfstudio.utils.eval_utils import eval_setup
+
+    bucket = os.environ["R2_BUCKET_NAME"]
+    stage_dir = os.path.join(work, "stage")
+    os.makedirs(stage_dir, exist_ok=True)
+
+    # test_mode="inference" skips building the eval dataloader, which we have no
+    # use for and which is the slowest part of loading a run.
+    _, pipeline, _, _ = eval_setup(Path(config_path), test_mode="inference")
+    dataset = pipeline.datamanager.train_dataset
+
+    cameras_path = os.path.join(stage_dir, "cameras.json")
+    count = _write_cameras_json(dataset, cameras_path)
+    client.upload_file(cameras_path, bucket, f"{work_prefix}cameras.json")
+
+    # Only the images the dataparser actually selected: nerfstudio downscales
+    # large captures and trains off images_2/images_4, and the cameras written
+    # above carry those dimensions. Uploading processed/images instead would
+    # hand SuGaR photos that disagree with its intrinsics.
+    for image_path in dataset.image_filenames:
+        name = os.path.basename(str(image_path))
+        client.upload_file(str(image_path), bucket, f"{work_prefix}images/{name}")
+
+    # Not required by SuGaR — carried so the mesh can be mapped into the ENU
+    # frame the georeferencing step solves for, whenever that is wired up.
+    transforms = os.path.join(os.path.dirname(config_path), "dataparser_transforms.json")
+    if os.path.exists(transforms):
+        client.upload_file(transforms, bucket, f"{work_prefix}dataparser_transforms.json")
+
+    print(f"[mesh] staged {count} cameras and images under {work_prefix}")
+    return {"work_prefix": work_prefix, "staged_cameras": count}
+
+
 @app.function(
     # 24 GB; drop to "T4" for small scenes, bump to "A100" if OOM/timeout. If you
     # add a card outside sm_75/80/86, add its arch to CMAKE_CUDA_ARCHITECTURES.
@@ -425,10 +524,25 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
         # had GPS" rather than silently serving an unscaled model, and so the
         # Sim3 is persisted next to the splat it belongs to.
         client.upload_file(plys[0], os.environ["R2_BUCKET_NAME"], output_key)
+
+        # 5) Stage the SuGaR handoff bundle. Deliberately after the upload and
+        # deliberately swallowed: the splat is already in R2 and the user is
+        # waiting on it, so a staging problem must cost them the mesh, not the
+        # model. Without work_prefix in the payload the backend simply marks the
+        # job's mesh stage skipped.
+        try:
+            mesh_inputs = _stage_mesh_inputs(
+                client, work, configs[0], f"work/{job_id}/"
+            )
+        except Exception as exc:
+            print(f"[mesh] staging failed, no mesh will be built: {exc}")
+            mesh_inputs = {}
+
         _post_webhook(webhook_url, {
             "status": "done",
             "output_key": output_key,
             **georeference,
+            **mesh_inputs,
         })
     except Exception as exc:  # always fire a webhook so the job never hangs
         _post_webhook(webhook_url, {"status": "failed", "error": str(exc)})

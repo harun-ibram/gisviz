@@ -34,6 +34,10 @@ class OSMNode(SQLModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
     model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
+    # R2 key of the SuGaR mesh (.glb) extracted from the splat at model_path.
+    # Independent of model_path: meshing runs after the splat is already served,
+    # so a node can legitimately have one and not the other.
+    mesh_path: str | None = Field(default=None, sa_column=Column("mesh_path", Text))
 
 
 class OSMWay(SQLModel, table=True):
@@ -112,6 +116,8 @@ class Region(SQLModel, table=True):
     # yet) has no geometry until one is assigned later.
     geom: Any | None = Field(default=None, sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=True))
     model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
+    # See OSMNode.mesh_path — the SuGaR mesh derived from model_path's splat.
+    mesh_path: str | None = Field(default=None, sa_column=Column("mesh_path", Text))
 
 
 class RasterLayer(SQLModel, table=True):
@@ -240,8 +246,12 @@ class Job(SQLModel, table=True):
     __tablename__ = "jobs"
     __table_args__ = {"schema": "public"}
 
-    # A splat-generation job: photos -> COLMAP + Gaussian splatting -> R2 -> model_path.
+    # A splat-generation job: photos -> COLMAP + Gaussian splatting -> R2 -> model_path,
+    # then SuGaR on top of that splat -> .glb in R2 -> mesh_path.
     id: str = Field(primary_key=True)
+    # Deliberately still only about the *splat*: 'done' means the .ply is served.
+    # Meshing runs afterwards and reports through mesh_status, so clients that
+    # poll this field keep behaving exactly as they did before SuGaR existed.
     status: str = Field(default="pending")  # pending | processing | done | failed
     target_type: str = Field(nullable=False)  # "node" | "region"
     target_id: str = Field(nullable=False)  # OSMNode.node_id (as str) or Region.id
@@ -249,6 +259,20 @@ class Job(SQLModel, table=True):
     output_key: str | None = Field(default=None, sa_column=Column("output_key", Text))
     modal_call_id: str | None = Field(default=None, sa_column=Column("modal_call_id", Text))
     error: str | None = Field(default=None, sa_column=Column("error", Text))
+    # R2 prefix holding the handoff bundle the splat worker stages for SuGaR
+    # (cameras.json, dataparser_transforms.json, the training images).
+    work_prefix: str | None = Field(default=None, sa_column=Column("work_prefix", Text))
+    mesh_key: str | None = Field(default=None, sa_column=Column("mesh_key", Text))
+    # NULL until the splat finishes, then:
+    # processing | done | failed | skipped (no bundle staged -> nothing to mesh)
+    mesh_status: str | None = Field(default=None, sa_column=Column("mesh_status", Text))
+    mesh_error: str | None = Field(default=None, sa_column=Column("mesh_error", Text))
+    mesh_call_id: str | None = Field(default=None, sa_column=Column("mesh_call_id", Text))
+    # Set when the uploaded photos were purged. Also the "can this be retried?"
+    # flag: once the inputs are gone, re-running the job means re-uploading.
+    inputs_deleted_at: datetime | None = Field(
+        default=None, sa_column=Column("inputs_deleted_at", DateTime(timezone=True))
+    )
     created_at: datetime | None = Field(
         default=None,
         sa_column=Column(

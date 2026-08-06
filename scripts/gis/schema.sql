@@ -18,7 +18,8 @@ CREATE TABLE osm.nodes (
     changeset   BIGINT,
     "user"      TEXT,
     uid         BIGINT,
-    model_path  TEXT,
+    model_path  TEXT,                    -- R2 key of the Gaussian splat (.ply)
+    mesh_path   TEXT,                    -- R2 key of the SuGaR mesh (.glb) built from it
     "timestamp" TIMESTAMPTZ
 );
 
@@ -99,7 +100,9 @@ CREATE TABLE public.regions (
     properties  JSONB NOT NULL DEFAULT '{}'::jsonb,  -- room for any extra GeoJSON properties
     -- Nullable: POST /regions creates a region by name only, with no boundary
     -- drawn yet; geom is filled in later.
-    geom        GEOMETRY(MultiPolygon, 4326)
+    geom        GEOMETRY(MultiPolygon, 4326),
+    model_path  TEXT,                    -- R2 key of the Gaussian splat (.ply)
+    mesh_path   TEXT                     -- R2 key of the SuGaR mesh (.glb) built from it
 );
 
 -- Safe to run against an already-deployed database where this column is still
@@ -110,10 +113,13 @@ CREATE INDEX idx_regions_geom ON public.regions USING GIST (geom);
 CREATE INDEX idx_regions_properties ON public.regions USING GIN (properties);
 
 -- Splat-generation jobs: photos -> COLMAP + Gaussian splatting (on a serverless
--- GPU) -> .ply in R2 -> written back to the target's model_path. Kept in sync
--- with the Job SQLModel in src/models.py.
+-- GPU) -> .ply in R2 -> written back to the target's model_path, then SuGaR on
+-- top of that splat -> .glb in R2 -> mesh_path. Kept in sync with the Job
+-- SQLModel in src/models.py.
 CREATE TABLE public.jobs (
     id            TEXT PRIMARY KEY,                       -- uuid
+    -- Still only about the splat: 'done' means the .ply is served. The mesh
+    -- stage reports separately through mesh_status.
     status        TEXT NOT NULL DEFAULT 'pending',        -- pending|processing|done|failed
     target_type   TEXT NOT NULL,                          -- 'node' | 'region'
     target_id     TEXT NOT NULL,                          -- osm.nodes.node_id (as text) or public.regions.id
@@ -121,6 +127,12 @@ CREATE TABLE public.jobs (
     output_key    TEXT,                                   -- R2 key of the produced splat, once done
     modal_call_id TEXT,                                   -- Modal function-call id for the running job
     error         TEXT,                                   -- failure detail when status='failed'
+    work_prefix   TEXT,                                   -- R2 prefix of the SuGaR handoff bundle
+    mesh_key      TEXT,                                   -- R2 key of the produced .glb mesh
+    mesh_status   TEXT,                                   -- NULL|processing|done|failed|skipped
+    mesh_error    TEXT,                                   -- failure detail when mesh_status='failed'
+    mesh_call_id  TEXT,                                   -- Modal function-call id for the mesh run
+    inputs_deleted_at TIMESTAMPTZ,                        -- when the uploaded photos were purged
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );

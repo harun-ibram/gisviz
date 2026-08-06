@@ -17,7 +17,7 @@ from auth import RequireUser, ensure_auth_schema
 from auth_api import router as auth_router
 from deps import SessionDep, engine, get_signed_url, get_upload_url, r2_client  # noqa: F401
 from gis_api import router as gis_router
-from gis_runtime import slugify
+from gis_runtime import r2_delete_prefix, slugify
 from gis_schema import ensure_gis_schema, reap_orphaned_gis_jobs
 from models import (
     Job,
@@ -84,6 +84,22 @@ def _row_to_dict(obj: SQLModel, geojson: str | None) -> dict[str, Any]:
     return data
 
 
+def _mesh_fields(mesh_path: str | None) -> dict[str, Any]:
+    """
+    The SuGaR mesh half of a model_path response.
+
+    Always present, always nullable: meshing runs after the splat is already
+    served, so a target that has a model does not necessarily have a mesh yet.
+    """
+    if not mesh_path:
+        return {"mesh_path": None, "mesh_url": None, "mesh_filename": None}
+    return {
+        "mesh_path": mesh_path,
+        "mesh_url": get_signed_url(mesh_path),
+        "mesh_filename": mesh_path.split("/")[-1],
+    }
+
+
 
 @app.get("/splat-url")
 async def get_splat_url(path: str = Query(...)):
@@ -135,6 +151,9 @@ async def get_node_model_path(node_id: int, session: SessionDep):
         "model_path": node.model_path,
         "url": get_signed_url(node.model_path),
         "filename": node.model_path.split("/")[-1],
+        # Null until SuGaR has run over the splat, which happens well after the
+        # model itself is servable — callers must treat it as optional.
+        **_mesh_fields(node.mesh_path),
     }
     
 class CreateNodeRequest(BaseModel):
@@ -227,7 +246,8 @@ async def get_region_model_path(id: int, session: SessionDep):
         return {"error": "Region not found"}
     return {"model_path": region.model_path,
             "url": get_signed_url(region.model_path),
-            "filename": region.model_path.split("/")[-1]
+            "filename": region.model_path.split("/")[-1],
+            **_mesh_fields(region.mesh_path),
     }
 
 
@@ -243,9 +263,16 @@ class CreateJobRequest(BaseModel):
 
 
 class WebhookRequest(BaseModel):
+    # Which worker is reporting. Defaults to the splat stage so a worker
+    # deployed before this field existed still lands in the right branch.
+    stage: str = "splat"      # "splat" | "mesh"
     status: str               # "done" | "failed"
     output_key: str | None = None
     error: str | None = None
+    # splat stage: where the SuGaR handoff bundle was staged. Absent when
+    # staging failed, which is what makes the mesh stage skippable.
+    work_prefix: str | None = None
+    mesh_key: str | None = None   # mesh stage: R2 key of the produced .glb
 
 
 @app.post("/jobs", dependencies=[RequireUser])
@@ -275,13 +302,21 @@ async def create_job(body: CreateJobRequest, session: SessionDep):
     return {"job_id": job_id, "input_prefix": input_prefix, "upload_urls": upload_urls}
 
 
+def _job_target(job: Job, session: Session) -> OSMNode | Region | None:
+    """The node or region a job's artifacts get attached to."""
+    if job.target_type == "node":
+        return session.get(OSMNode, int(job.target_id))
+    return session.get(Region, job.target_id)
+
+
 def _target_name(job: Job, session: Session) -> str | None:
     """The display name of a job's node/region, used to name the output splat."""
+    target = _job_target(job, session)
+    if not target:
+        return None
     if job.target_type == "node":
-        node = session.get(OSMNode, int(job.target_id))
-        return (node.tags or {}).get("name") if node else None
-    region = session.get(Region, job.target_id)
-    return region.name if region else None
+        return (target.tags or {}).get("name")
+    return target.name
 
 
 @app.post("/jobs/{job_id}/start", dependencies=[RequireUser])
@@ -323,12 +358,98 @@ async def get_job(job_id: str, session: SessionDep):
         raise HTTPException(status_code=404, detail="Job not found")
     return {
         "job_id": job.id,
+        # Still the splat's status alone — clients poll this for "is the model
+        # ready?" and meshing must not delay that answer.
         "status": job.status,
         "target_type": job.target_type,
         "target_id": job.target_id,
         "output_key": job.output_key,
         "error": job.error,
+        "mesh_status": job.mesh_status,
+        "mesh_key": job.mesh_key,
+        "mesh_error": job.mesh_error,
     }
+
+
+def _spawn_mesh_job(job: Job) -> None:
+    """Run SuGaR over the splat this job just produced."""
+    import modal  # lazy import, for the same reason as start_job
+
+    backend_url = os.environ["BACKEND_PUBLIC_URL"].rstrip("/")
+    webhook_url = f"{backend_url}/jobs/{job.id}/webhook"
+    # Same directory and slug as the splat, different extension. "Next to the
+    # gaussian model" is meant literally: anything holding model_path can derive
+    # the mesh key without another round trip.
+    mesh_key = f"{job.output_key.rsplit('.', 1)[0]}.glb"
+
+    mesh = modal.Function.from_name("gisviz-sugar", "mesh")
+    call = mesh.spawn(job.id, job.output_key, job.work_prefix, mesh_key, webhook_url)
+
+    job.mesh_key = mesh_key
+    job.mesh_call_id = getattr(call, "object_id", None)
+    job.mesh_status = "processing"
+    job.mesh_error = None
+
+
+def _handle_splat_result(job: Job, body: WebhookRequest, session: Session) -> None:
+    """Record the finished splat, then hand off to the mesh stage."""
+    if body.status != "done":
+        job.status = "failed"
+        job.error = body.error
+        return
+
+    output_key = body.output_key or job.output_key
+    target = _job_target(job, session)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target feature not found")
+    target.model_path = output_key
+    session.add(target)
+    job.output_key = output_key
+    job.status = "done"
+
+    # Everything below is the bonus stage. The splat is stored and the job is
+    # already 'done', so nothing here may raise: the worst outcome allowed is a
+    # model without a mesh.
+    job.work_prefix = body.work_prefix
+    if not body.work_prefix:
+        job.mesh_status = "skipped"
+        job.mesh_error = "The worker staged no inputs for meshing."
+        return
+
+    try:
+        _spawn_mesh_job(job)
+    except Exception:
+        logger.warning("Could not spawn the mesh job for %s", job.id, exc_info=True)
+        job.mesh_status = "failed"
+        job.mesh_error = "Could not start the mesh job."
+
+
+def _handle_mesh_result(job: Job, body: WebhookRequest, session: Session) -> None:
+    """Record the finished mesh and, on success, purge the photos it consumed."""
+    if body.status != "done":
+        # Keep the photos. A failed mesh is the one case where retrying is still
+        # possible without asking for the whole upload again.
+        job.mesh_status = "failed"
+        job.mesh_error = body.error
+        return
+
+    mesh_key = body.mesh_key or job.mesh_key
+    target = _job_target(job, session)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target feature not found")
+    target.mesh_path = mesh_key
+    session.add(target)
+    job.mesh_key = mesh_key
+    job.mesh_status = "done"
+
+    # Both stages that need the photos have now run. r2_delete_prefix is
+    # best-effort by design — orphaned objects cost pennies, while raising here
+    # would lose the mesh result recorded a line above.
+    deleted = r2_delete_prefix(job.input_prefix)
+    if job.work_prefix:
+        deleted += r2_delete_prefix(job.work_prefix)
+    job.inputs_deleted_at = datetime.now(timezone.utc)
+    logger.info("Job %s: purged %d source object(s) after meshing", job.id, deleted)
 
 
 @app.post("/jobs/{job_id}/webhook")
@@ -338,7 +459,12 @@ async def job_webhook(
     session: SessionDep,
     x_webhook_secret: Annotated[str | None, Header()] = None,
 ):
-    """Called by the Modal worker on completion. Secret-verified before trust."""
+    """
+    Called by the Modal workers on completion. Secret-verified before trust.
+
+    Both stages report here — the splat worker (gpu/splat_app.py) and the mesh
+    worker (gpu/sugar_app.py) — distinguished by ``stage``.
+    """
     if x_webhook_secret != os.environ["JOB_WEBHOOK_SECRET"]:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
@@ -346,23 +472,38 @@ async def job_webhook(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if body.status == "done":
-        output_key = body.output_key or job.output_key
-        if job.target_type == "node":
-            target = session.get(OSMNode, int(job.target_id))
-        else:
-            target = session.get(Region, job.target_id)
-        if not target:
-            raise HTTPException(status_code=404, detail="Target feature not found")
-        target.model_path = output_key
-        session.add(target)
-        job.output_key = output_key
-        job.status = "done"
+    if body.stage == "mesh":
+        _handle_mesh_result(job, body, session)
     else:
-        job.status = "failed"
-        job.error = body.error
+        _handle_splat_result(job, body, session)
 
     job.updated_at = datetime.now(timezone.utc)
     session.add(job)
     session.commit()
-    return {"job_id": job.id, "status": job.status}
+    return {"job_id": job.id, "status": job.status, "mesh_status": job.mesh_status}
+
+
+@app.post("/jobs/{job_id}/mesh", dependencies=[RequireUser])
+async def retry_mesh_job(job_id: str, session: SessionDep):
+    """Re-run SuGaR for a job whose mesh stage failed."""
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.mesh_status == "processing":
+        return {"job_id": job_id, "mesh_status": job.mesh_status}
+    if not job.output_key or not job.work_prefix:
+        raise HTTPException(
+            status_code=409, detail="This job has no staged splat to build a mesh from"
+        )
+    # The handoff bundle is purged along with the photos once a mesh succeeds,
+    # so there is nothing left to re-run against.
+    if job.inputs_deleted_at:
+        raise HTTPException(
+            status_code=409, detail="This job's inputs were already purged"
+        )
+
+    _spawn_mesh_job(job)
+    job.updated_at = datetime.now(timezone.utc)
+    session.add(job)
+    session.commit()
+    return {"job_id": job.id, "mesh_status": job.mesh_status}

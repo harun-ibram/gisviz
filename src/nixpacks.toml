@@ -1,0 +1,24 @@
+# Railway build configuration.
+#
+# Lives in src/ because that is the service's root directory — the deployed tree
+# has gis_worker.py and .venv directly under /app, not under /app/src.
+#
+# Why this file exists: rasterio ships a vendored GDAL inside its wheel, but that
+# GDAL still dynamic-links a few ordinary system libraries, and the stock
+# Nixpacks Python image does not carry them. Importing rasterio died with
+#
+#     ImportError: libexpat.so.1: cannot open shared object file
+#
+# and because rasterio is imported lazily (inside process_lidar.rasterize_laz
+# and gis_common's helpers) that surfaced only once a GIS job actually touched a
+# raster — not at deploy time, and not on any other endpoint.
+#
+# Only the library that actually failed is listed. Naming a package the base
+# image does not have breaks the *build*, which is worse than the runtime error
+# it was meant to prevent, so resist adding more on spec: if a different
+# ImportError appears, add that one library then.
+#
+# `'...'` keeps the packages Nixpacks chose on its own and appends to them;
+# replacing the list outright would drop the Python toolchain.
+[phases.setup]
+aptPkgs = ['...', 'libexpat1']

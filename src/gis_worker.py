@@ -186,6 +186,19 @@ def classify(exc: BaseException) -> tuple[str, str]:
     if "Could not detect geometry type" in message or "no features" in message.lower():
         return "empty_result", "No features survived processing, so there is nothing to draw."
 
+    # A missing shared library is a broken deployment, not a bad upload, and it
+    # will fail identically for every file the user tries. Saying so beats
+    # "unexpected error" — that sent us hunting through a LiDAR tile that turned
+    # out to be perfectly valid. The processing libraries are imported lazily,
+    # so this only ever surfaces mid-job, never at boot.
+    if isinstance(exc, ImportError):
+        missing = getattr(exc, "name", None) or message
+        return (
+            "dependency_missing",
+            f"The server is missing a processing dependency ({missing}). This is a "
+            "deployment problem, not a problem with your file — retrying will not help.",
+        )
+
     for module_name, class_names, kind in (
         ("rasterio.errors", ("RasterioIOError",), "unreadable"),
         ("pyogrio.errors", ("DataSourceError", "DataLayerError"), "unreadable"),

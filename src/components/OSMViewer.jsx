@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
+import { collectCoordinatePairs } from './libraryUtils.jsx'
 
 const svgSize = 1000
 const svgPadding = 74
@@ -92,6 +95,47 @@ const classOf = (volume, breaks) => {
 
 // Round numbers a scale bar is allowed to land on.
 const SCALE_STEPS = [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000]
+
+// Map features (nodes and regions). Orange for "has a splat you can open",
+// neutral for "nothing generated yet" — an absence is not a second category, so
+// it gets no hue of its own. Both carry a dark ring so they stay separable
+// against the parchment and against each other where they overlap.
+const SPLAT_POINT = '#eb6834'
+const EMPTY_POINT = '#b3a68f'
+const POINT_RING = '#243041'
+
+/**
+ * One clickable dot per node/region.
+ *
+ * Nodes carry a GeoJSON Point; regions carry a MultiPolygon, or null when one
+ * was created by name before a boundary was drawn. Both collapse to a single
+ * lon/lat here — the plan is points now, extruded LiDAR heights later — and a
+ * region without geometry simply has nowhere to sit, so it is skipped.
+ */
+const toMapFeature = (kind, raw) => {
+  const pairs = collectCoordinatePairs(raw?.geom?.coordinates)
+  if (pairs.length === 0) return null
+
+  const [lonSum, latSum] = pairs.reduce(
+    (total, [lon, lat]) => [total[0] + lon, total[1] + lat],
+    [0, 0],
+  )
+  const lon = lonSum / pairs.length
+  const lat = latSum / pairs.length
+
+  const name = kind === 'node'
+    ? (raw.tags?.name ?? `Node ${raw.node_id}`)
+    : (raw.name ?? 'Region')
+
+  return {
+    key: `${kind}-${kind === 'node' ? raw.node_id : raw.id}`,
+    kind,
+    name,
+    lon,
+    lat,
+    modelPath: raw.model_path ?? null,
+  }
+}
 
 const interestingNodeTags = ['name', 'amenity', 'tourism', 'historic', 'shop', 'office', 'entrance', 'highway', 'barrier', 'railway', 'man_made', 'leisure']
 
@@ -333,6 +377,17 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
   // one lands — which also avoids a blank flash on every pan.
   const [request, setRequest] = useState({ status: 'loading', data: null, error: '' })
   const [hovered, setHovered] = useState(null)
+  const [hoveredFeature, setHoveredFeature] = useState(null)
+  const navigate = useNavigate()
+
+  // Every node and region, not only the ones with a splat: the map is meant to
+  // show what exists and which of it is already reconstructed.
+  const { allNodes, allRegions } = useSplatLibrary()
+
+  const features = useMemo(() => [
+    ...(allNodes ?? []).map((node) => toMapFeature('node', node)),
+    ...(allRegions ?? []).map((region) => toMapFeature('region', region)),
+  ].filter(Boolean), [allNodes, allRegions])
 
   useEffect(() => {
     let active = true
@@ -401,6 +456,13 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
         }
       }
     }
+    for (const feature of features) {
+      box.minLat = Math.min(box.minLat, feature.lat)
+      box.maxLat = Math.max(box.maxLat, feature.lat)
+      box.minLon = Math.min(box.minLon, feature.lon)
+      box.maxLon = Math.max(box.maxLon, feature.lon)
+      seen = true
+    }
     if (mapData) {
       box.minLat = Math.min(box.minLat, mapData.bounds.minLat)
       box.maxLat = Math.max(box.maxLat, mapData.bounds.maxLat)
@@ -408,8 +470,23 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
       box.maxLon = Math.max(box.maxLon, mapData.bounds.maxLon)
       seen = true
     }
-    return seen ? box : null
-  }, [buildings, mapData])
+    if (!seen) return null
+
+    // A single point, or several at the same spot, gives a zero-span box that
+    // the projector would divide by. Open it out to roughly a 200 m window.
+    const PAD = 0.001
+    if (box.maxLat - box.minLat < PAD) {
+      const midLat = (box.minLat + box.maxLat) / 2
+      box.minLat = midLat - PAD
+      box.maxLat = midLat + PAD
+    }
+    if (box.maxLon - box.minLon < PAD) {
+      const midLon = (box.minLon + box.maxLon) / 2
+      box.minLon = midLon - PAD
+      box.maxLon = midLon + PAD
+    }
+    return box
+  }, [buildings, mapData, features])
 
   const project = useMemo(() => (bounds ? makeProjector(bounds) : null), [bounds])
 
@@ -483,6 +560,20 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
     }
   }, [buildings, project])
 
+  const featureView = useMemo(() => {
+    if (!project || features.length === 0) return null
+    // Splat-bearing dots last, so they land on top where features overlap.
+    return features
+      .map((feature) => ({ ...feature, ...project(feature.lat, feature.lon) }))
+      .sort((a, b) => Number(Boolean(a.modelPath)) - Number(Boolean(b.modelPath)))
+  }, [features, project])
+
+  const openSplat = (feature) => {
+    if (!feature.modelPath) return
+    // Same shape Home.jsx uses, so the viewer's existing effect picks it up.
+    navigate('/viewer', { state: { modelPath: feature.modelPath, name: feature.name } })
+  }
+
   const error = fetchError || parseError
   const status = loading
     ? 'Loading buildings…'
@@ -541,18 +632,20 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
     }
   }, [mapData, project])
 
-  if (loading) {
-    return <div className={className} aria-label="Map preview"><div className="map-loading">Loading buildings…</div></div>
+  // Features come from context and need no fetch, so they can carry the map on
+  // their own: only wait on the buildings request when there is nothing to draw.
+  if (loading && !featureView) {
+    return <div className={className} aria-label="Map preview"><div className="map-loading">Loading map…</div></div>
   }
 
-  if (error && !buildingView) {
+  if (error && !buildingView && !featureView) {
     return <div className={className} aria-label="Map preview"><div className="map-loading">{error}</div></div>
   }
 
-  if (!buildingView && !mapView) {
+  if (!buildingView && !mapView && !featureView) {
     return (
       <div className={className} aria-label="Map preview">
-        <div className="map-loading">No buildings in this area yet.</div>
+        <div className="map-loading">Nothing on the map yet — add a node or a region first.</div>
       </div>
     )
   }
@@ -560,7 +653,7 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
   return (
 
       <div className={className} aria-label="Map preview">
-        {buildingView || mapView ? (
+        {buildingView || mapView || featureView ? (
           <svg
             className="map-svg"
             viewBox={`0 0 ${svgSize} ${svgSize}`}
@@ -680,6 +773,51 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
                 ))
               : null}
 
+            {/* Nodes and regions as points. Orange means a splat exists and the
+                dot opens it; neutral means nothing has been generated there. */}
+            {featureView
+              ? featureView.map((feature) => {
+                  const openable = Boolean(feature.modelPath)
+                  const active = hoveredFeature?.key === feature.key
+                  return (
+                    <g
+                      key={feature.key}
+                      role={openable ? 'button' : undefined}
+                      tabIndex={openable ? 0 : undefined}
+                      aria-label={openable ? `Open ${feature.name} in the viewer` : feature.name}
+                      style={{ cursor: openable ? 'pointer' : 'default', outline: 'none' }}
+                      onMouseEnter={() => setHoveredFeature(feature)}
+                      onMouseLeave={() => setHoveredFeature((current) => (current?.key === feature.key ? null : current))}
+                      onFocus={() => setHoveredFeature(feature)}
+                      onBlur={() => setHoveredFeature((current) => (current?.key === feature.key ? null : current))}
+                      onClick={() => openSplat(feature)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          openSplat(feature)
+                        }
+                      }}
+                    >
+                      {/* Invisible, larger hit area: a 9px dot is a hard target. */}
+                      <circle cx={feature.x} cy={feature.y} r="22" fill="transparent" />
+                      {active ? (
+                        <circle cx={feature.x} cy={feature.y} r="17" fill="none" stroke={POINT_RING} strokeWidth="2.5" opacity="0.65" />
+                      ) : null}
+                      <circle
+                        cx={feature.x}
+                        cy={feature.y}
+                        r={openable ? 11 : 8}
+                        fill={openable ? SPLAT_POINT : EMPTY_POINT}
+                        stroke={POINT_RING}
+                        strokeWidth="2.5"
+                      />
+                      {/* A dot inside marks "openable" without relying on hue. */}
+                      {openable ? <circle cx={feature.x} cy={feature.y} r="3.5" fill="#fdf6e8" /> : null}
+                    </g>
+                  )
+                })
+              : null}
+
             <rect x={svgPadding - 16} y={svgPadding - 16} width={svgSize - (svgPadding - 16) * 2} height={svgSize - (svgPadding - 16) * 2} fill="none" stroke="#5e6d82" strokeOpacity="0.5" strokeWidth="2" />
 
             {/* Legend. Identity never rests on colour alone: every class is
@@ -731,7 +869,7 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
 
             {/* Hover readout. Exact numbers live here, so colour is never the
                 only way to get a value out of the map. */}
-            {hovered ? (
+            {hovered && !hoveredFeature ? (
               <g transform={`translate(${svgSize - svgPadding - 300}, ${svgPadding})`}>
                 <rect x="-14" y="-24" width="314" height={hovered.measured ? 132 : 84} rx="8" fill="#fdf6e8" fillOpacity="0.95" stroke="#c3b79c" />
                 <text x="0" y="-2" fill="#243041" fontSize="19" fontWeight="700">
@@ -758,13 +896,40 @@ function OSMViewer({ className = 'map-card', osmText = null, bbox = null } = {})
           <div className="map-loading">Building the map square...</div>
         )}
 
-        {buildingView ? (
+        {/* Legend and readout live in HTML, not in the SVG: the panel is 320px
+            wide, so text sized inside a 1000-unit viewBox renders around 4px. */}
+        {featureView ? (
+          <div className="map-key">
+            <span className="map-key-item">
+              <i className="map-key-dot map-key-dot--splat" aria-hidden="true" />
+              splat — click to open
+            </span>
+            <span className="map-key-item">
+              <i className="map-key-dot map-key-dot--empty" aria-hidden="true" />
+              no splat yet
+            </span>
+          </div>
+        ) : null}
+
+        {featureView || buildingView ? (
           <p className="map-caption">
-            {status}
-            {buildingView.measuredCount < buildingView.shapes.length
-              ? ` · ${buildingView.shapes.length - buildingView.measuredCount} without LiDAR cover`
-              : ''}
-            {buildingView.totalVolume > 0 ? ` · ${formatVolume(buildingView.totalVolume)} total` : ''}
+            {hoveredFeature ? (
+              <>
+                <strong>{hoveredFeature.name}</strong>
+                {` · ${hoveredFeature.lat.toFixed(5)}, ${hoveredFeature.lon.toFixed(5)} · `}
+                {hoveredFeature.modelPath ? 'click to open' : 'no splat yet'}
+              </>
+            ) : (
+              <>
+                {featureView
+                  ? `${featureView.filter((f) => f.modelPath).length} of ${featureView.length} with a splat`
+                  : status}
+                {buildingView ? ` · ${status}` : ''}
+                {buildingView && buildingView.measuredCount < buildingView.shapes.length
+                  ? ` · ${buildingView.shapes.length - buildingView.measuredCount} without LiDAR cover`
+                  : ''}
+              </>
+            )}
           </p>
         ) : null}
       </div>

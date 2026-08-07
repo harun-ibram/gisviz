@@ -558,8 +558,18 @@
 }
 
 .gv-map-canvas {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
+}
+
+/* The square viewBox plus width:100% already fixes the aspect, so let the SVG
+   take only the height it needs — `height: 100%` filled the panel and pushed
+   the key and caption out of view entirely. */
+.gv-map-canvas .map-svg {
+  flex: 0 0 auto;
+  height: auto;
 }
 
 .map-svg,
@@ -589,6 +599,34 @@
   color: color-mix(in srgb, var(--color-text) 72%, transparent);
   font-variant-numeric: tabular-nums;
 }
+
+/* Point key under the minimap. HTML rather than SVG so the labels keep their
+   real size — inside the 1000-unit viewBox they shrink to ~4px in the 320px
+   side panel. */
+.map-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 10px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  font-size: 12px;
+}
+
+.map-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.map-key-dot {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid #243041;
+  border-radius: 50%;
+}
+
+.map-key-dot--splat { background: #eb6834; }
+.map-key-dot--empty { background: #b3a68f; }
 
 /* Counts and totals under the minimap. Sits outside the SVG so it stays
    legible at any viewport size instead of scaling with the viewBox. */

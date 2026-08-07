@@ -702,6 +702,17 @@
 
 .gv-file-size { font-size: 12px; }
 
+.gv-upload-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.gv-upload-option-help {
+  margin: 0;
+  font-size: 12px;
+}
+
 .gv-job-status {
   display: flex;
   align-items: center;

@@ -155,6 +155,7 @@ DDL_STATEMENTS: list[str] = [
     # only adds what the mesh stage introduced, so a deployed database picks the
     # columns up on the next boot instead of needing a hand-run ALTER. Mirrors
     # the Job / OSMNode / Region models in src/models.py.
+    "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS want_mesh         BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS work_prefix       TEXT",
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_key          TEXT",
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_status       TEXT",

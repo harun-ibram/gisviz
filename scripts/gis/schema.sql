@@ -127,8 +127,13 @@ CREATE TABLE public.jobs (
     output_key    TEXT,                                   -- R2 key of the produced splat, once done
     modal_call_id TEXT,                                   -- Modal function-call id for the running job
     error         TEXT,                                   -- failure detail when status='failed'
+    -- Opt-in: meshing roughly doubles processing time, so it only runs when the
+    -- uploader asked for it. False also means "purge the photos once the splat
+    -- is done" — no later stage reads them.
+    want_mesh     BOOLEAN NOT NULL DEFAULT FALSE,
     work_prefix   TEXT,                                   -- R2 prefix of the SuGaR handoff bundle
     mesh_key      TEXT,                                   -- R2 key of the produced .glb mesh
+    -- 'skipped' = no mesh requested (mesh_error NULL) or nothing staged to mesh
     mesh_status   TEXT,                                   -- NULL|processing|done|failed|skipped
     mesh_error    TEXT,                                   -- failure detail when mesh_status='failed'
     mesh_call_id  TEXT,                                   -- Modal function-call id for the mesh run

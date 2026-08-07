@@ -453,7 +453,15 @@ def _stage_mesh_inputs(client, work: str, config_path: str, work_prefix: str) ->
     ],
     image=image,
 )
-def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -> None:
+def process(
+    job_id: str,
+    input_prefix: str,
+    output_key: str,
+    webhook_url: str,
+    # Defaulted so a backend that spawns with four positional arguments — an
+    # older deploy, or a hand-run `modal run` — still works. The mesh is opt-in.
+    want_mesh: bool = False,
+) -> None:
     client = _r2_client()
     try:
         work = tempfile.mkdtemp(prefix=f"job-{job_id}-")
@@ -525,18 +533,24 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
         # Sim3 is persisted next to the splat it belongs to.
         client.upload_file(plys[0], os.environ["R2_BUCKET_NAME"], output_key)
 
-        # 5) Stage the SuGaR handoff bundle. Deliberately after the upload and
-        # deliberately swallowed: the splat is already in R2 and the user is
-        # waiting on it, so a staging problem must cost them the mesh, not the
-        # model. Without work_prefix in the payload the backend simply marks the
-        # job's mesh stage skipped.
-        try:
-            mesh_inputs = _stage_mesh_inputs(
-                client, work, configs[0], f"work/{job_id}/"
-            )
-        except Exception as exc:
-            print(f"[mesh] staging failed, no mesh will be built: {exc}")
-            mesh_inputs = {}
+        # 5) Stage the SuGaR handoff bundle, but only if a mesh was asked for:
+        # staging re-uploads every training image, which is pure cost when no
+        # mesh stage will read them back.
+        #
+        # Deliberately after the upload and deliberately swallowed: the splat is
+        # already in R2 and the user is waiting on it, so a staging problem must
+        # cost them the mesh, not the model. Without work_prefix in the payload
+        # the backend simply marks the job's mesh stage skipped.
+        mesh_inputs = {}
+        if want_mesh:
+            try:
+                mesh_inputs = _stage_mesh_inputs(
+                    client, work, configs[0], f"work/{job_id}/"
+                )
+            except Exception as exc:
+                print(f"[mesh] staging failed, no mesh will be built: {exc}")
+        else:
+            print("[mesh] no mesh requested, skipping the SuGaR handoff staging")
 
         _post_webhook(webhook_url, {
             "status": "done",

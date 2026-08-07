@@ -260,6 +260,10 @@ class CreateJobRequest(BaseModel):
     target_type: str          # "node" | "region"
     target_id: str            # OSMNode.node_id (as str) or Region.id
     filenames: list[str]      # photo filenames the client will upload
+    # Opt in to the SuGaR mesh stage, which roughly doubles processing time.
+    # Defaults off so a caller that never heard of this field gets the fast
+    # path — the mesh is the extra, not the baseline.
+    want_mesh: bool = False
 
 
 class WebhookRequest(BaseModel):
@@ -292,6 +296,7 @@ async def create_job(body: CreateJobRequest, session: SessionDep):
         target_type=body.target_type,
         target_id=body.target_id,
         input_prefix=input_prefix,
+        want_mesh=body.want_mesh,
     )
     session.add(job)
     session.commit()
@@ -340,7 +345,10 @@ async def start_job(job_id: str, session: SessionDep):
     webhook_url = f"{backend_url}/jobs/{job_id}/webhook"
 
     process = modal.Function.from_name("gisviz-splat", "process")
-    call = process.spawn(job_id, job.input_prefix, output_key, webhook_url)
+    # want_mesh rides along so the worker can skip staging the SuGaR handoff
+    # bundle — re-uploading every training image is pure waste when no mesh
+    # will consume it.
+    call = process.spawn(job_id, job.input_prefix, output_key, webhook_url, job.want_mesh)
 
     job.output_key = output_key
     job.modal_call_id = getattr(call, "object_id", None)
@@ -365,6 +373,9 @@ async def get_job(job_id: str, session: SessionDep):
         "target_id": job.target_id,
         "output_key": job.output_key,
         "error": job.error,
+        # Lets a client tell the two meanings of mesh_status='skipped' apart:
+        # not requested (want_mesh false) vs. requested but unbuildable.
+        "want_mesh": job.want_mesh,
         "mesh_status": job.mesh_status,
         "mesh_key": job.mesh_key,
         "mesh_error": job.mesh_error,
@@ -391,6 +402,21 @@ def _spawn_mesh_job(job: Job) -> None:
     job.mesh_error = None
 
 
+def _purge_inputs(job: Job) -> None:
+    """
+    Drop the uploaded photos and any staged handoff bundle.
+
+    Called once nothing that still has to run needs them. r2_delete_prefix is
+    best-effort by design — orphaned objects cost pennies, while raising here
+    would lose the result the caller recorded a line above.
+    """
+    deleted = r2_delete_prefix(job.input_prefix)
+    if job.work_prefix:
+        deleted += r2_delete_prefix(job.work_prefix)
+    job.inputs_deleted_at = datetime.now(timezone.utc)
+    logger.info("Job %s: purged %d source object(s)", job.id, deleted)
+
+
 def _handle_splat_result(job: Job, body: WebhookRequest, session: Session) -> None:
     """Record the finished splat, then hand off to the mesh stage."""
     if body.status != "done":
@@ -411,9 +437,20 @@ def _handle_splat_result(job: Job, body: WebhookRequest, session: Session) -> No
     # already 'done', so nothing here may raise: the worst outcome allowed is a
     # model without a mesh.
     job.work_prefix = body.work_prefix
+    if not job.want_mesh:
+        # Nobody asked for a mesh, so no second stage will ever read the photos.
+        # Release them now instead of waiting on a run that will not happen.
+        job.mesh_status = "skipped"
+        job.mesh_error = None  # not a failure: a mesh was never requested
+        _purge_inputs(job)
+        return
+
     if not body.work_prefix:
+        # Requested, but the worker staged nothing to mesh from. Unretryable —
+        # /jobs/{id}/mesh needs a work_prefix — so the photos are dead weight.
         job.mesh_status = "skipped"
         job.mesh_error = "The worker staged no inputs for meshing."
+        _purge_inputs(job)
         return
 
     try:
@@ -442,14 +479,8 @@ def _handle_mesh_result(job: Job, body: WebhookRequest, session: Session) -> Non
     job.mesh_key = mesh_key
     job.mesh_status = "done"
 
-    # Both stages that need the photos have now run. r2_delete_prefix is
-    # best-effort by design — orphaned objects cost pennies, while raising here
-    # would lose the mesh result recorded a line above.
-    deleted = r2_delete_prefix(job.input_prefix)
-    if job.work_prefix:
-        deleted += r2_delete_prefix(job.work_prefix)
-    job.inputs_deleted_at = datetime.now(timezone.utc)
-    logger.info("Job %s: purged %d source object(s) after meshing", job.id, deleted)
+    # Both stages that need the photos have now run.
+    _purge_inputs(job)
 
 
 @app.post("/jobs/{job_id}/webhook")
@@ -491,6 +522,13 @@ async def retry_mesh_job(job_id: str, session: SessionDep):
         raise HTTPException(status_code=404, detail="Job not found")
     if job.mesh_status == "processing":
         return {"job_id": job_id, "mesh_status": job.mesh_status}
+    # No mesh was asked for, so the photos went the moment the splat landed.
+    # Turning the mesh on after the fact would mean re-uploading them.
+    if not job.want_mesh:
+        raise HTTPException(
+            status_code=409,
+            detail="No mesh was requested for this job; its photos were purged after the splat.",
+        )
     if not job.output_key or not job.work_prefix:
         raise HTTPException(
             status_code=409, detail="This job has no staged splat to build a mesh from"

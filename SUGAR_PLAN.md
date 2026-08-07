@@ -1,5 +1,12 @@
 # SuGaR mesh extraction in the splat pipeline
 
+> **Partly superseded by `OPTIONAL_MESH_PLAN.md`.** This plan makes the mesh
+> unconditional; it is now opt-in per job via `want_mesh` on `POST /jobs`, and
+> the retention rule below ("photos deleted only after the mesh succeeds")
+> generalised to "deleted as soon as nothing left to run needs them" — which for
+> a splat-only job is the splat webhook. Everything else here still describes
+> the shipped pipeline.
+
 ## Context
 
 Today `gpu/splat_app.py` turns uploaded photos into a Gaussian splat: COLMAP SfM →

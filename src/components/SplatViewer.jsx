@@ -40,6 +40,17 @@ const CLICK_SLOP_PX = 4
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
+// How the splat is oriented when it loads. Degrees rather than radians because
+// that is what the sliders show; nerfstudio exports Y-down, hence the 180° roll
+// about X that used to be hardcoded as `rotation.set(Math.PI, 0.25, 0)`.
+const DEFAULT_ROTATION = { x: 180, y: 14.3, z: 0 }
+const ROTATION_AXES = [
+  { key: 'x', label: 'X' },
+  { key: 'y', label: 'Y' },
+  { key: 'z', label: 'Z' },
+]
+const toRadians = (degrees) => (degrees * Math.PI) / 180
+
 // The mesh sits beside the splat in R2 under the same name: models/<job>/x.ply
 // becomes models/<job>/x.glb. Nothing records it, so it is derived rather than
 // looked up — which is also why a missing .glb is a normal outcome, not a bug.
@@ -231,6 +242,11 @@ const isTypingTarget = (target) =>
     // where the scene opens, and the number grows as you get closer.
     const [zoom, setZoom] = useState(1)
     const [mapOpen, setMapOpen] = useState(true)
+    const [rotateOpen, setRotateOpen] = useState(false)
+    const [rotation, setRotation] = useState(DEFAULT_ROTATION)
+    // Mirrored so the splat, which finishes loading asynchronously, can adopt
+    // the current angles instead of the ones captured when the effect ran.
+    const rotationRef = useRef(DEFAULT_ROTATION)
     const routeSplatName = location.state?.name ?? getFileName(location.state?.modelPath)
     const selectedSplatName = selectedFile?.name ?? remoteSource?.name ?? routeSplatName
     const viewerTitle = selectedSplatName ?? 'No splat loaded'
@@ -632,7 +648,8 @@ const isTypingTarget = (target) =>
 
           splat.position.set(0, -0.08, -1.3)
           splat.scale.setScalar(0.9)
-          splat.rotation.set(Math.PI, 0.25, 0)
+          const angles = rotationRef.current
+          splat.rotation.set(toRadians(angles.x), toRadians(angles.y), toRadians(angles.z))
           // The splat can finish loading after the user has already switched to
           // the mesh; without this it would pop back on top of it.
           splat.visible = viewModeRef.current === 'splat'
@@ -722,6 +739,15 @@ const isTypingTarget = (target) =>
     useEffect(() => {
       viewModeRef.current = viewMode
     }, [viewMode])
+
+    // Drive both objects from one set of angles: the mesh is an alternative
+    // rendering of the same scene, so it should sit the same way up.
+    useEffect(() => {
+      rotationRef.current = rotation
+      const euler = [toRadians(rotation.x), toRadians(rotation.y), toRadians(rotation.z)]
+      splatRef.current?.rotation.set(...euler)
+      meshRef.current?.rotation.set(...euler)
+    }, [rotation])
 
     // Load the .glb on the first switch, then just flip visibility — refetching
     // and re-parsing a mesh on every toggle would stall the render loop.
@@ -939,6 +965,16 @@ const isTypingTarget = (target) =>
           <button
             type="button"
             className="btn btn-secondary"
+            style={{ borderColor: rotateOpen ? 'var(--color-accent)' : 'var(--color-divider)' }}
+            onClick={() => setRotateOpen((open) => !open)}
+            title="Rotate the model on X, Y and Z"
+          >
+            Rotate
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary"
             style={{ borderColor: buildingsOn ? 'var(--color-accent)' : 'var(--color-divider)' }}
             onClick={() => setBuildingsOn((on) => !on)}
             title="LiDAR-measured building footprints, extruded at true metric scale"
@@ -984,6 +1020,38 @@ const isTypingTarget = (target) =>
                   : buildingsInfo.kind === 'empty'
                     ? 'No measured buildings yet — upload a LiDAR tile and an OSM extract.'
                     : buildingsInfo.message}
+              </div>
+            ) : null}
+
+            {rotateOpen ? (
+              <div className="gv-rotate-panel">
+                <div className="gv-rotate-head">
+                  <span>Rotation</span>
+                  <button
+                    type="button"
+                    className="gv-rotate-reset"
+                    onClick={() => setRotation(DEFAULT_ROTATION)}
+                  >
+                    Reset
+                  </button>
+                </div>
+                {ROTATION_AXES.map(({ key, label }) => (
+                  <label key={key} className="gv-rotate-row">
+                    <span className="gv-rotate-axis">{label}</span>
+                    <input
+                      type="range"
+                      min="-180"
+                      max="180"
+                      step="1"
+                      value={rotation[key]}
+                      onChange={(event) => {
+                        const next = Number(event.target.value)
+                        setRotation((current) => ({ ...current, [key]: next }))
+                      }}
+                    />
+                    <span className="gv-rotate-value">{Math.round(rotation[key])}°</span>
+                  </label>
+                ))}
               </div>
             ) : null}
 

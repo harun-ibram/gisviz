@@ -600,6 +600,62 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* — rotation sliders —
+   Floats over the stage rather than living in the toolbar, which is already
+   full; top-right so it clears the hint strip along the bottom. */
+.gv-rotate-panel {
+  position: absolute;
+  right: 16px;
+  bottom: 56px;
+  z-index: 2;
+  width: 232px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+}
+
+.gv-rotate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: color-mix(in srgb, var(--color-text) 72%, transparent);
+}
+
+.gv-rotate-reset {
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-200);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.gv-rotate-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.gv-rotate-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--color-accent);
+}
+
+.gv-rotate-axis { color: color-mix(in srgb, var(--color-text) 60%, transparent); }
+
+.gv-rotate-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 72%, transparent);
+}
+
 /* — viewer location map (Leaflet) —
    Carries `.gv-gis-map` as well, so it inherits that scope's Leaflet dark
    restyle and its flex-column layout rather than duplicating ~60 lines. */

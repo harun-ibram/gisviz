@@ -156,6 +156,11 @@ function Upload() {
     const [dragging, setDragging] = useState(false)
     const fileInputRef = useRef(null)
 
+    // Off by default, matching the backend's `want_mesh` default: the mesh is a
+    // second GPU stage on top of the splat, so asking for it roughly doubles the
+    // wait. Most uploads only ever get viewed as a splat.
+    const [wantMesh, setWantMesh] = useState(false)
+
     const [running, setRunning] = useState(false)
     const [status, setStatus] = useState('')
     const [notice, setNotice] = useState('')
@@ -354,6 +359,7 @@ function Upload() {
                     target_type: type,
                     target_id: id,
                     filenames: files.map((file) => file.name),
+                    want_mesh: wantMesh,
                 }),
             })
 
@@ -383,12 +389,25 @@ function Upload() {
 
             checkWrite(startResponse, `Unable to start job (${startResponse.status})`)
 
-            setStatus('Processing (this can take a while)…')
+            setStatus(wantMesh
+                ? 'Processing the splat (this can take a while)…'
+                : 'Processing (this can take a while)…')
 
             const job = await pollUntilDone(jobId)
 
             setStatus('Done')
             setResult({ modelPath: job.output_key, name: name || job.target_id })
+
+            // `status` is about the splat alone, so a mesh job is still running
+            // at this point. Say so rather than let the user conclude the mesh
+            // was quietly dropped. Appended: a skipped-photos notice matters too.
+            if (job.mesh_status === 'processing') {
+                setNotice((current) => [
+                    current,
+                    'The splat is ready. The mesh is still building and will attach to this'
+                    + ' target on its own — you can leave this page.',
+                ].filter(Boolean).join(' '))
+            }
         } catch (processError) {
             setError(processError instanceof Error ? processError.message : 'Processing failed.')
             setStatus('')
@@ -575,6 +594,36 @@ function Upload() {
                             </div>
                         ) : null}
                     </section>
+
+                    <section>
+                        <div className="gv-section-head">
+                            <h4>Options</h4>
+                            <div className="hr gv-section-rule" />
+                        </div>
+
+                        <div className="gv-upload-options">
+                            {/* The .radio/.dot pair is the app's existing boolean
+                                control (see the GIS layer library's filters) —
+                                a real checkbox for semantics, a styled dot for
+                                the affordance. */}
+                            <label className="radio">
+                                <input
+                                    type="checkbox"
+                                    checked={wantMesh}
+                                    disabled={running}
+                                    onChange={(event) => setWantMesh(event.target.checked)}
+                                />
+                                <span className="dot" />
+                                Also build a 3D mesh
+                            </label>
+                            <p className="text-muted gv-upload-option-help">
+                                A textured mesh gives you actual geometry to measure, occlude or
+                                export, but it runs as a second pass over the finished splat and
+                                roughly doubles processing time. The splat itself is ready — and
+                                viewable — before the mesh starts.
+                            </p>
+                        </div>
+                    </section>
                 </div>
 
                 <aside className="gv-detail-rail">
@@ -599,6 +648,12 @@ function Upload() {
                         <div className="gv-detail-row">
                             <span className="gv-detail-label">Photos</span>
                             <span className="gv-detail-value">{files.length}</span>
+                        </div>
+                        <div className="gv-detail-row">
+                            <span className="gv-detail-label">Mesh</span>
+                            <span className="gv-detail-value">
+                                {wantMesh ? 'Yes · slower' : 'No'}
+                            </span>
                         </div>
                     </div>
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
 import OSMViewer from './OSMViewer.jsx'
@@ -38,6 +39,16 @@ const MAX_PITCH = Math.PI / 2 - 0.01
 const CLICK_SLOP_PX = 4
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+// The mesh sits beside the splat in R2 under the same name: models/<job>/x.ply
+// becomes models/<job>/x.glb. Nothing records it, so it is derived rather than
+// looked up — which is also why a missing .glb is a normal outcome, not a bug.
+const meshPathFor = (modelPath) => {
+  if (!modelPath) return null
+  return /\.[^./]+$/.test(modelPath)
+    ? modelPath.replace(/\.[^./]+$/, '.glb')
+    : `${modelPath}.glb`
+}
 
 // ---------------------------------------------------------------------------
 // Buildings (Phase 4a)
@@ -202,7 +213,14 @@ const isTypingTarget = (target) =>
     // exactly zero.
     const lookRef = useRef({ yaw: 0, pitch: 0 })
     const buildingsRef = useRef(null)
+    const meshRef = useRef(null)
     const [pointerLocked, setPointerLocked] = useState(false)
+    // 'splat' | 'mesh'. Kept in a ref too: the splat can finish loading after a
+    // switch, and it needs to know whether to show itself.
+    const [viewMode, setViewMode] = useState('splat')
+    const viewModeRef = useRef('splat')
+    const [meshReady, setMeshReady] = useState(false)
+    const [meshError, setMeshError] = useState('')
     const [buildingsOn, setBuildingsOn] = useState(false)
     const [buildingsInfo, setBuildingsInfo] = useState(null) // { measured, total } | 'empty' | error
     const [selectedFile, setSelectedFile] = useState(null)
@@ -615,6 +633,9 @@ const isTypingTarget = (target) =>
           splat.position.set(0, -0.08, -1.3)
           splat.scale.setScalar(0.9)
           splat.rotation.set(Math.PI, 0.25, 0)
+          // The splat can finish loading after the user has already switched to
+          // the mesh; without this it would pop back on top of it.
+          splat.visible = viewModeRef.current === 'splat'
           scene.add(splat)
           splatRef.current = splat
           setStatus('Rendered')
@@ -637,6 +658,40 @@ const isTypingTarget = (target) =>
       }
     }, [selectedFile, remoteSource])
 
+    /**
+     * Point the camera at an object's bounding box.
+     *
+     * The .glb is loaded at its own coordinates rather than being forced onto
+     * the splat's hand-tuned transform: the two come out of different exporters
+     * and a mesh is usually already Y-up, so reusing the splat's `rotation.x =
+     * PI` would land it upside down. Framing the camera instead means whatever
+     * the file's conventions are, something sensible is on screen.
+     */
+    const frameObject = (object) => {
+      const camera = cameraRef.current
+      if (!camera || !object) return
+
+      const box = new THREE.Box3().setFromObject(object)
+      if (box.isEmpty()) return
+
+      const size = box.getSize(new THREE.Vector3())
+      const centre = box.getCenter(new THREE.Vector3())
+      const radius = Math.max(size.length() / 2, 0.5)
+      const distance = (radius / Math.tan((camera.fov * Math.PI) / 360)) * 1.3
+
+      camera.position.set(centre.x, centre.y + radius * 0.35, centre.z + distance)
+
+      const dx = centre.x - camera.position.x
+      const dy = centre.y - camera.position.y
+      const dz = centre.z - camera.position.z
+      const look = lookRef.current
+      look.yaw = Math.atan2(-dx, -dz)
+      look.pitch = Math.atan2(dy, Math.hypot(dx, dz))
+      camera.rotation.set(look.pitch, look.yaw, 0)
+
+      setZoom(INITIAL_DISTANCE / Math.max(camera.position.distanceTo(SPLAT_POSITION), 1e-3))
+    }
+
     // Back off far enough to see the whole extent, looking slightly down. At 1
     // unit = 1 metre the default camera sits 4.5 m from the origin, which is
     // usually *inside* a building — without this the feature looks broken.
@@ -652,6 +707,88 @@ const isTypingTarget = (target) =>
       camera.rotation.set(lookRef.current.pitch, lookRef.current.yaw, 0)
       setZoom(INITIAL_DISTANCE / camera.position.distanceTo(SPLAT_POSITION))
     }
+
+    const modelPath = location.state?.modelPath ?? null
+    const meshPath = meshPathFor(modelPath)
+    // A failed mesh keeps the splat on screen rather than leaving a black stage.
+    const meshActive = viewMode === 'mesh' && !meshError
+    const meshLoading = viewMode === 'mesh' && !meshReady && !meshError
+    const meshAlert = viewMode !== 'mesh'
+      ? null
+      : meshError || (meshLoading ? `Loading ${getFileName(meshPath)}…` : null)
+
+    // Mirrored into a ref in an effect, not during render: the splat load
+    // resolves asynchronously and would otherwise read a stale closure.
+    useEffect(() => {
+      viewModeRef.current = viewMode
+    }, [viewMode])
+
+    // Load the .glb on the first switch, then just flip visibility — refetching
+    // and re-parsing a mesh on every toggle would stall the render loop.
+    useEffect(() => {
+      const splat = splatRef.current
+      const mesh = meshRef.current
+      const wantMesh = viewMode === 'mesh'
+
+      if (!wantMesh || !meshPath) {
+        if (mesh) mesh.visible = false
+        if (splat) splat.visible = true
+        return undefined
+      }
+
+      if (mesh) {
+        mesh.visible = true
+        if (splat) splat.visible = false
+        frameObject(mesh)
+        return undefined
+      }
+
+      let active = true
+      const loader = new GLTFLoader()
+
+      fetch(`${API_URL}/splat-url?path=${encodeURIComponent(meshPath)}`)
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`Could not sign the mesh URL (${response.status})`)
+          }
+          return response.json()
+        })
+        .then((data) => loader.loadAsync(data.url))
+        .then((gltf) => {
+          const scene = sceneRef.current
+          if (!active || !scene) return
+
+          scene.add(gltf.scene)
+          meshRef.current = gltf.scene
+          if (splatRef.current) splatRef.current.visible = false
+          setMeshReady(true)
+          frameObject(gltf.scene)
+        })
+        .catch(() => {
+          if (!active) return
+          // /splat-url signs blindly, so a missing object only shows up as a
+          // 404 when the signed URL is actually fetched.
+          setMeshError(`No mesh found for this splat (${getFileName(meshPath)}).`)
+        })
+
+      return () => {
+        active = false
+      }
+    }, [viewMode, meshPath, API_URL])
+
+    // GPU resources are not garbage collected — release them explicitly.
+    useEffect(() => () => {
+      const mesh = meshRef.current
+      if (!mesh) return
+      mesh.traverse((child) => {
+        child.geometry?.dispose()
+        const material = child.material
+        if (Array.isArray(material)) material.forEach((entry) => entry.dispose())
+        else material?.dispose()
+      })
+      sceneRef.current?.remove(mesh)
+      meshRef.current = null
+    }, [])
 
     // Fetch and build the mesh the first time buildings are switched on, then
     // just toggle its visibility — re-extruding a city on every click would
@@ -784,6 +921,24 @@ const isTypingTarget = (target) =>
           <button
             type="button"
             className="btn btn-secondary"
+            style={{ borderColor: meshActive ? 'var(--color-accent)' : 'var(--color-divider)' }}
+            disabled={!meshPath}
+            onClick={() => {
+              // Clearing here rather than in the effect lets a failed load be
+              // retried by toggling, without a setState in an effect body.
+              setMeshError('')
+              setViewMode((mode) => (mode === 'mesh' ? 'splat' : 'mesh'))
+            }}
+            title={meshPath
+              ? `Switch between the Gaussian splat and ${getFileName(meshPath)}`
+              : 'Only available for a splat opened from the library, not a local upload'}
+          >
+            {viewMode === 'mesh' ? 'Show splat' : 'Show mesh'}
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary"
             style={{ borderColor: buildingsOn ? 'var(--color-accent)' : 'var(--color-divider)' }}
             onClick={() => setBuildingsOn((on) => !on)}
             title="LiDAR-measured building footprints, extruded at true metric scale"
@@ -813,9 +968,16 @@ const isTypingTarget = (target) =>
         >
           <div className="gv-stage-panel" aria-label="Spark splat preview" onWheel={handleScroll}>
             <div className="gv-stage" ref={stageRef} />
-            {error ? <div className="gv-stage-alert">{error}</div> : null}
-            {/* Shares the alert slot with the splat error, so it yields to it. */}
-            {buildingsOn && buildingsInfo && !error ? (
+            {error && !meshAlert ? <div className="gv-stage-alert">{error}</div> : null}
+            {/* One alert slot, so the three claimants are ordered explicitly.
+                Mesh state wins while the switch is on it — the splat's own
+                error is not what you are looking at, and suppressing this left
+                a mesh switch with no feedback at all. */}
+            {meshAlert ? (
+              <div className="gv-stage-alert gv-stage-alert--info">{meshAlert}</div>
+            ) : null}
+
+            {buildingsOn && buildingsInfo && !error && !meshAlert ? (
               <div className="gv-stage-alert gv-stage-alert--info">
                 {buildingsInfo.kind === 'ready'
                   ? `${buildingsInfo.measured} of ${buildingsInfo.total} buildings measured · 1 unit = 1 m · not aligned to the splat`

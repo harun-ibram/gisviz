@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Column, DateTime, Text, text
+from sqlalchemy import Boolean, Column, DateTime, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import UserDefinedType
 from sqlmodel import Field, SQLModel
@@ -259,12 +259,22 @@ class Job(SQLModel, table=True):
     output_key: str | None = Field(default=None, sa_column=Column("output_key", Text))
     modal_call_id: str | None = Field(default=None, sa_column=Column("modal_call_id", Text))
     error: str | None = Field(default=None, sa_column=Column("error", Text))
+    # Whether the user asked for a SuGaR mesh on top of the splat. Opt-in: the
+    # mesh roughly doubles processing time, and false means the photos are
+    # purged as soon as the splat lands, because nothing else will read them.
+    want_mesh: bool = Field(
+        default=False,
+        sa_column=Column("want_mesh", Boolean, nullable=False, server_default=text("false")),
+    )
     # R2 prefix holding the handoff bundle the splat worker stages for SuGaR
-    # (cameras.json, dataparser_transforms.json, the training images).
+    # (cameras.json, dataparser_transforms.json, the training images). Only
+    # staged when want_mesh is set.
     work_prefix: str | None = Field(default=None, sa_column=Column("work_prefix", Text))
     mesh_key: str | None = Field(default=None, sa_column=Column("mesh_key", Text))
     # NULL until the splat finishes, then:
-    # processing | done | failed | skipped (no bundle staged -> nothing to mesh)
+    # processing | done | failed | skipped. 'skipped' covers both "no mesh was
+    # requested" (want_mesh false, mesh_error NULL) and "the worker staged no
+    # bundle, so there is nothing to mesh" (mesh_error explains).
     mesh_status: str | None = Field(default=None, sa_column=Column("mesh_status", Text))
     mesh_error: str | None = Field(default=None, sa_column=Column("mesh_error", Text))
     mesh_call_id: str | None = Field(default=None, sa_column=Column("mesh_call_id", Text))

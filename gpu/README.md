@@ -1,21 +1,26 @@
 # Splat ingestion pipeline
 
-Turns user-uploaded photos into a Gaussian splat and a mesh, and attaches both
-to a map feature. GPU work runs on **Modal** (serverless, scale-to-zero); the
-FastAPI backend on Railway only orchestrates and writes to the database.
+Turns user-uploaded photos into a Gaussian splat and, if asked for, a mesh, and
+attaches both to a map feature. GPU work runs on **Modal** (serverless,
+scale-to-zero); the FastAPI backend on Railway only orchestrates and writes to
+the database.
 
 ```
 client            Railway (FastAPI)            Modal (GPU)               R2
-  | POST /jobs ---------> create job row
+  | POST /jobs {want_mesh} -> create job row
   | <-- job_id + presigned PUT URLs
   | PUT photos --------------------------------------------------------> inputs/{job_id}/
   | POST /jobs/{id}/start -> spawn process() --> pull photos <---------- inputs/{job_id}/
   |                                              COLMAP + splatfacto
   |                                              upload scene ---------> models/{job_id}/scene.ply
   |                                              stage mesh inputs ----> work/{job_id}/
+  |                                                (only if want_mesh)
   |                          webhook <---------- POST (secret-signed)
   |                          set model_path, status=done
   | GET /jobs/{id} (poll) -> status
+  |
+  |   want_mesh false: delete inputs/{job_id}/, mesh_status=skipped. Done.
+  |
   |                       -> spawn mesh() ----> pull splat + bundle <--- models/ + work/
   |                                              SuGaR -> textured mesh
   |                                              upload mesh ----------> models/{job_id}/scene.glb
@@ -23,6 +28,10 @@ client            Railway (FastAPI)            Modal (GPU)               R2
   |                          set mesh_path, mesh_status=done
   |                          delete inputs/{job_id}/ and work/{job_id}/
 ```
+
+**The mesh is opt-in.** `POST /jobs` takes `want_mesh` (default `false`);
+meshing roughly doubles processing time, so it only runs when the uploader
+asked for it. `want_mesh` also decides retention — see below.
 
 Neither worker touches the DB — they only read/write R2 and call the webhook,
 which is what sets `model_path` / `mesh_path`.
@@ -167,17 +176,31 @@ produced `.obj` is the real test, which is why a missing one raises.
 
 ### Retention
 
-**The uploaded photos are deleted once the mesh succeeds** — both
-`inputs/{job_id}/` and the `work/{job_id}/` handoff bundle, purged by the
-backend in the mesh webhook. A *failed* mesh keeps them, so
-`POST /jobs/{job_id}/mesh` can retry without asking for the upload again; once a
-mesh succeeds that retry returns 409, and re-running the splat for that target
-means re-uploading the photos.
+**The uploaded photos are deleted as soon as nothing left to run needs them** —
+both `inputs/{job_id}/` and the `work/{job_id}/` handoff bundle, purged by the
+backend in the webhook that establishes that (`_purge_inputs` in `src/main.py`):
 
-`mesh_status = "skipped"` means the splat worker could not stage a bundle. That
-is by design: staging happens after the `.ply` is already in R2 and its failure
-is swallowed, because the worst outcome allowed there is a model without a mesh,
-never a lost model.
+| job | purged in | why |
+|---|---|---|
+| `want_mesh: false` | the splat webhook | no second stage will read them |
+| `want_mesh: true`, mesh done | the mesh webhook | both stages have run |
+| `want_mesh: true`, nothing staged | the splat webhook | unretryable, so dead weight |
+| `want_mesh: true`, mesh **failed** | **not purged** | a retry still needs them |
+
+A failed mesh is the one case that keeps the photos, so
+`POST /jobs/{job_id}/mesh` can retry without asking for the upload again. That
+retry returns 409 in every other terminal case — including a splat-only job,
+whose photos are already gone — and re-running the splat for that target means
+re-uploading.
+
+`mesh_status = "skipped"` means one of two things, told apart by `want_mesh` on
+`GET /jobs/{id}` (or by `mesh_error`, which is `NULL` in the first case):
+
+- **`want_mesh` false** — no mesh was requested. Not a failure.
+- **`want_mesh` true** — the splat worker could not stage a bundle. That is by
+  design: staging happens after the `.ply` is already in R2 and its failure is
+  swallowed, because the worst outcome allowed there is a model without a mesh,
+  never a lost model.
 
 ## Open items
 

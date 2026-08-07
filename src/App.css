@@ -600,9 +600,48 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Point key under the minimap. HTML rather than SVG so the labels keep their
-   real size — inside the 1000-unit viewBox they shrink to ~4px in the 320px
-   side panel. */
+/* — viewer location map (Leaflet) —
+   Carries `.gv-gis-map` as well, so it inherits that scope's Leaflet dark
+   restyle and its flex-column layout rather than duplicating ~60 lines. */
+.gv-splat-map {
+  height: 100%;
+  min-height: 0;
+}
+
+/* .leaflet-container is 0px tall without an explicit height on its parent.
+   flex:1 inside the panel column, with a floor so it never collapses. */
+.gv-splat-map-canvas {
+  flex: 1 1 auto;
+  min-height: 220px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.gv-splat-map-canvas .gv-leaflet {
+  width: 100%;
+  height: 100%;
+}
+
+.gv-splat-map-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Leaflet exposes no cursor option, so the marker class carries it. */
+.gv-splat-point { cursor: default; }
+.gv-splat-point--open { cursor: pointer; }
+
+/* Same trick the GIS page uses: darken the light OSM tiles without inverting
+   the markers drawn over them. */
+.gv-splat-map-canvas[data-basemap="osm"] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+}
+
+/* Point key under the map. */
 .map-key {
   display: flex;
   flex-wrap: wrap;

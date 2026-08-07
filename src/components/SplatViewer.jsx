@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
-import OSMViewer from './OSMViewer.jsx'
+import SplatMap from './SplatMap.jsx'
 import { getFileExtension, getFileName } from '../utils.jsx'
 import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx'
 
@@ -1008,13 +1008,13 @@ const isTypingTarget = (target) =>
           {mapOpen ? (
             <div className="gv-map-panel">
               <div className="gv-map-panel-head">
-                <span className="gv-map-panel-title">Location · map.osm</span>
+                <span className="gv-map-panel-title">Location</span>
                 <button type="button" className="gv-tool gv-tool--sm" onClick={() => setMapOpen(false)} aria-label="Hide map">
                   <IconClose />
                 </button>
               </div>
               <div className="gv-map-panel-body">
-                <OSMViewer className="gv-map-canvas" />
+                <SplatMap className="gv-map-canvas" />
               </div>
             </div>
           ) : null}

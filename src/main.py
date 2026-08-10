@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -78,9 +79,23 @@ app.include_router(gis_router)
 
 
 # Helper function for formatting the data in the table into a usable object
-def _row_to_dict(obj: SQLModel, geojson: str | None) -> dict[str, Any]:
-    data = obj.model_dump(exclude="geom")
+def _row_to_dict(obj: SQLModel, geojson: str | None, **extra: str | None) -> dict[str, Any]:
+    """
+    A row plus its geometry columns rendered as GeoJSON.
+
+    `exclude` takes a *set*. It used to be passed the string "geom", which
+    pydantic iterates as {'g','e','o','m'} — none of which are field names, so
+    nothing was excluded and the raw EWKB hex survived, only to be overwritten
+    on the next line. That was harmless while `geom` was the sole geometry
+    column; any second one would have leaked hex straight to the client.
+
+    `extra` maps a field name to its ST_AsGeoJSON string, so a caller can render
+    several geometry columns in one pass.
+    """
+    data = obj.model_dump(exclude={"geom", *extra})
     data["geom"] = json.loads(geojson) if geojson else None
+    for name, value in extra.items():
+        data[name] = json.loads(value) if value else None
     return data
 
 
@@ -106,36 +121,47 @@ async def get_splat_url(path: str = Query(...)):
     return {"url": get_signed_url(path), "filename": path.split("/")[-1]}
 
 # API endpoints
+# Both geometry columns are rendered as GeoJSON. `footprint` must be selected
+# explicitly: left to model_dump it would come back as raw EWKB hex.
+_NODE_SELECT = select(
+    OSMNode,
+    func.ST_AsGeoJSON(OSMNode.geom),
+    func.ST_AsGeoJSON(OSMNode.footprint),
+)
+
+
 @app.get("/nodes")
 async def get_nodes(session: SessionDep):
-    rows = session.exec(
-        select(OSMNode, func.ST_AsGeoJSON(OSMNode.geom))
-    ).all()
+    rows = session.exec(_NODE_SELECT).all()
 
-    return [_row_to_dict(obj, geojson) for obj, geojson in rows]
+    return [
+        _row_to_dict(obj, geojson, footprint=footprint)
+        for obj, geojson, footprint in rows
+    ]
 
 @app.get("/splat_nodes")
 async def get_splat_nodes(session: SessionDep):
     rows = session.exec(
-        select(OSMNode, func.ST_AsGeoJSON(OSMNode.geom))
-        .where(OSMNode.model_path != None)
+        _NODE_SELECT.where(OSMNode.model_path != None)
     ).all()
 
-    return [_row_to_dict(obj, geojson) for obj, geojson in rows]
+    return [
+        _row_to_dict(obj, geojson, footprint=footprint)
+        for obj, geojson, footprint in rows
+    ]
 
 @app.get("/nodes/{node_id}")
 async def get_node(node_id: int, session: SessionDep):
     row = session.exec(
-        select(OSMNode, func.ST_AsGeoJSON(OSMNode.geom))
-        .where(OSMNode.node_id == node_id)
+        _NODE_SELECT.where(OSMNode.node_id == node_id)
     ).first()
 
     if not row:
         return {"error": "Node not found"}
-    
-    obj, geojson = row
 
-    return _row_to_dict(obj, geojson)
+    obj, geojson, footprint = row
+
+    return _row_to_dict(obj, geojson, footprint=footprint)
 
 @app.get("/nodes/{node_id}/model_path")
 async def get_node_model_path(node_id: int, session: SessionDep):
@@ -156,17 +182,128 @@ async def get_node_model_path(node_id: int, session: SessionDep):
         **_mesh_fields(node.mesh_path),
     }
     
+# ---------------------------------------------------------------------------
+# Drawn outlines
+#
+# These endpoints are the first place the API accepts geometry from a client,
+# so the ring is checked in Python before it reaches SQL: ST_GeomFromGeoJSON on
+# malformed input raises inside Postgres and would surface as a 500, and an
+# unbounded vertex list is a cheap way to make the server do a lot of work.
+# ---------------------------------------------------------------------------
+
+# Generous enough for a hand-drawn outline, small enough that no single request
+# can hand PostGIS a pathological ring.
+MAX_POLYGON_VERTICES = 1000
+
+# ~5e9 m2, roughly Belgium. This is a sanity bound against antimeridian wrap and
+# pasted garbage, not a judgement about how large an area may legitimately be.
+MAX_POLYGON_AREA_M2 = 5e9
+
+# Every ring goes through the same expression: ST_MakeValid repairs a
+# self-intersecting "bow tie" into a collection, and CollectionExtract(...,3)
+# pulls the polygons back out of whatever it produced. A ring that degenerates
+# to a line survives neither filter, so `checked` comes back empty and the
+# INSERT ... SELECT writes no row at all — which is the 400 path, with no extra
+# round trip to ask whether the geometry was usable.
+_POLYGON_CTE = """
+    WITH input AS (
+        SELECT ST_Multi(ST_CollectionExtract(
+                   ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326)), 3)) AS poly
+    ),
+    checked AS (
+        SELECT poly FROM input
+        WHERE poly IS NOT NULL
+          AND NOT ST_IsEmpty(poly)
+          AND ST_Area(poly::geography) > 0
+          AND ST_Area(poly::geography) < :max_area
+    )
+"""
+
+_BAD_OUTLINE = (
+    "That outline is not a usable area — check for crossed edges or repeated points."
+)
+
+
+def _ring_to_geojson(points: list[list[float]]) -> str:
+    """
+    Validate a [[lon, lat], ...] ring and render it as a GeoJSON Polygon.
+
+    The ring is closed here rather than in the browser: a drawing UI has no
+    reason to know that GeoJSON wants the first position repeated at the end.
+    """
+    if not points:
+        raise HTTPException(status_code=400, detail="Draw an outline first.")
+    if len(points) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail=f"An area needs at least 3 corners; got {len(points)}.",
+        )
+    if len(points) > MAX_POLYGON_VERTICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"That outline has {len(points)} corners; the limit is {MAX_POLYGON_VERTICES}.",
+        )
+
+    ring: list[list[float]] = []
+    for index, point in enumerate(points):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise HTTPException(
+                status_code=400, detail=f"Corner {index + 1} is not a [lon, lat] pair."
+            )
+        lon, lat = float(point[0]), float(point[1])
+        if not (math.isfinite(lon) and math.isfinite(lat)):
+            raise HTTPException(
+                status_code=400, detail=f"Corner {index + 1} is not a finite coordinate."
+            )
+        if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Corner {index + 1} ({lat:.5f}, {lon:.5f}) is off the map.",
+            )
+        ring.append([lon, lat])
+
+    if ring[0] != ring[-1]:
+        ring.append(list(ring[0]))
+    if len(ring) < 4:
+        raise HTTPException(status_code=400, detail=_BAD_OUTLINE)
+
+    return json.dumps({"type": "Polygon", "coordinates": [ring]})
+
+
 class CreateNodeRequest(BaseModel):
     name: str
-    lat: float
-    lon: float
+    # A drawn outline, [[lon, lat], ...]. `lat`/`lon` stay accepted so a client
+    # that predates polygons keeps working; exactly one of the two is required.
+    polygon: list[list[float]] | None = None
+    lat: float | None = None
+    lon: float | None = None
 
 
 @app.post("/nodes", dependencies=[RequireUser])
 async def create_node(body: CreateNodeRequest, session: SessionDep):
-    """Create a bare node (point + name tag) to attach a splat to later."""
-    row = session.exec(
-        text(
+    """Create a node to attach a splat to later, from a drawn outline or a point."""
+    tags = json.dumps({"name": body.name})
+
+    if body.polygon is not None:
+        sql = text(
+            _POLYGON_CTE
+            + """
+            INSERT INTO osm.nodes (node_id, geom, footprint, tags)
+            SELECT (SELECT COALESCE(MIN(node_id), 0) - 1 FROM osm.nodes),
+                   ST_PointOnSurface(c.poly),
+                   c.poly,
+                   CAST(:tags AS jsonb)
+            FROM checked c
+            RETURNING node_id
+            """
+        )
+        params = {
+            "geom": _ring_to_geojson(body.polygon),
+            "max_area": MAX_POLYGON_AREA_M2,
+            "tags": tags,
+        }
+    elif body.lat is not None and body.lon is not None:
+        sql = text(
             """
             INSERT INTO osm.nodes (node_id, geom, tags)
             VALUES (
@@ -176,32 +313,102 @@ async def create_node(body: CreateNodeRequest, session: SessionDep):
             )
             RETURNING node_id
             """
-        ),
-        params={"lon": body.lon, "lat": body.lat, "tags": json.dumps({"name": body.name})},
-    ).first()
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(status_code=400, detail=f"Could not create node: {exc.orig}") from exc
-    return {"node_id": row[0]}
+        )
+        params = {"lon": body.lon, "lat": body.lat, "tags": tags}
+    else:
+        raise HTTPException(
+            status_code=400, detail="Provide either a drawn outline or a lat/lon pair."
+        )
+
+    node_id = _insert_with_id_retry(session, sql, params)
+    if node_id is None:
+        raise HTTPException(status_code=400, detail=_BAD_OUTLINE)
+    return {"node_id": node_id}
+
+
+def _insert_with_id_retry(session, sql, params, attempts: int = 3):
+    """
+    Run an insert that allocates its own id, retrying on a duplicate key.
+
+    Node ids come from `MIN(node_id) - 1`, which two concurrent creates can read
+    as the same value. Drawing an outline makes the create interaction long
+    enough that overlapping requests stop being hypothetical.
+
+    Returns the RETURNING value, or None when the statement matched no rows —
+    which for the polygon path means the outline did not survive validation.
+    """
+    for attempt in range(attempts):
+        try:
+            row = session.exec(sql, params=params).first()
+            session.commit()
+            return row[0] if row else None
+        except IntegrityError as exc:
+            session.rollback()
+            if attempt == attempts - 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Another target was created at the same moment. Try again.",
+                ) from exc
+    return None
 
 
 class CreateRegionRequest(BaseModel):
     name: str
+    polygon: list[list[float]] | None = None
 
 
 @app.post("/regions", dependencies=[RequireUser])
 async def create_region(body: CreateRegionRequest, session: SessionDep):
-    """Create a bare region (name only, no boundary yet) to attach a splat to later."""
-    region = Region(id=str(uuid.uuid4()), name=body.name, geom=None)
-    session.add(region)
+    """Create a region, with a drawn boundary when one was supplied."""
+    region_id = str(uuid.uuid4())
+
+    if body.polygon is None:
+        # No outline: the pre-polygon behaviour, a name with no boundary yet.
+        region = Region(id=region_id, name=body.name, geom=None)
+        session.add(region)
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=400, detail=f"Could not create region: {exc.orig}"
+            ) from exc
+        return {"id": region.id, "name": region.name}
+
+    # Raw SQL rather than the ORM: `geom` is typed MultiPolygon, so the value has
+    # to go through ST_Multi, which is not expressible as a column assignment.
+    # `source = 'drawn'` is what lets the viewer tell a hand-drawn area apart
+    # from an imported administrative boundary.
+    row = session.exec(
+        text(
+            _POLYGON_CTE
+            + """
+            INSERT INTO public.regions (id, name, source, properties, geom)
+            SELECT :id, :name, 'drawn', '{}'::jsonb, c.poly
+            FROM checked c
+            RETURNING id
+            """
+        ),
+        params={
+            "id": region_id,
+            "name": body.name,
+            "geom": _ring_to_geojson(body.polygon),
+            "max_area": MAX_POLYGON_AREA_M2,
+        },
+    ).first()
+
+    if row is None:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=_BAD_OUTLINE)
+
     try:
         session.commit()
     except IntegrityError as exc:
         session.rollback()
-        raise HTTPException(status_code=400, detail=f"Could not create region: {exc.orig}") from exc
-    return {"id": region.id, "name": region.name}
+        raise HTTPException(
+            status_code=400, detail=f"Could not create region: {exc.orig}"
+        ) from exc
+    return {"id": region_id, "name": body.name}
 
 
 @app.get("/regions")
@@ -221,8 +428,10 @@ async def get_splat_regions(session: SessionDep):
 
     return [_row_to_dict(obj, geojson) for obj, geojson in rows]
 
+# `id: str`, not int: Region.id is a uuid string, so the int annotation 422'd on
+# every region the API itself creates — i.e. exactly the drawn ones.
 @app.get("/regions/{id}")
-async def get_region(id: int, session: SessionDep):
+async def get_region(id: str, session: SessionDep):
     row = session.exec(
         select(Region, func.ST_AsGeoJSON(Region.geom))
         .where(Region.id == id)
@@ -236,7 +445,7 @@ async def get_region(id: int, session: SessionDep):
     return _row_to_dict(obj, geojson)
 
 @app.get("/regions/{id}/model_path")
-async def get_region_model_path(id: int, session: SessionDep):
+async def get_region_model_path(id: str, session: SessionDep):
     region = session.exec(
         select(Region)
         .where(Region.id == id)

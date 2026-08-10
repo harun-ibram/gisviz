@@ -29,6 +29,14 @@ class OSMNode(SQLModel, table=True):
         default=None, sa_column=Column("timestamp", DateTime(timezone=True))
     )
     geom: Any = Field(sa_column=Column(GeometryType("Point", 4326), nullable=False))
+    # The area a user drew when creating this node. `geom` stays a Point — it is
+    # what the map plots a dot at, and osm.build_way_geometry() feeds it to
+    # ST_MakeLine, so widening its type would break way construction. The point
+    # is derived from this outline with ST_PointOnSurface.
+    footprint: Any | None = Field(
+        default=None,
+        sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=True),
+    )
     tags: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),

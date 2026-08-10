@@ -166,6 +166,17 @@ DDL_STATEMENTS: list[str] = [
     "ALTER TABLE public.regions ADD COLUMN IF NOT EXISTS mesh_path  TEXT",
     # model_path was on the Region model but never in regions' CREATE TABLE.
     "ALTER TABLE public.regions ADD COLUMN IF NOT EXISTS model_path TEXT",
+    # ---- 7. drawn footprints ---------------------------------------------
+    # The outline a user draws when creating a target. Regions already have a
+    # MultiPolygon `geom` to hold one; nodes do not and cannot — osm.nodes.geom
+    # is a Point that osm.build_way_geometry() feeds to ST_MakeLine — so they
+    # get a separate nullable column and keep the point as ST_PointOnSurface of
+    # the outline. Mirrors the OSMNode model in src/models.py.
+    "ALTER TABLE osm.nodes ADD COLUMN IF NOT EXISTS footprint GEOMETRY(MultiPolygon, 4326)",
+    "CREATE INDEX IF NOT EXISTS idx_nodes_footprint ON osm.nodes USING GIST (footprint)",
+    # A database built from an older scripts/gis/schema.sql may still have this
+    # NOT NULL. Dropping it on an already-nullable column is a no-op, not an error.
+    "ALTER TABLE public.regions ALTER COLUMN geom DROP NOT NULL",
 ]
 
 

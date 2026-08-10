@@ -160,3 +160,19 @@ CREATE TABLE IF NOT EXISTS public.buildings (
 CREATE INDEX IF NOT EXISTS idx_buildings_geom  ON public.buildings USING GIST (geom);
 CREATE INDEX IF NOT EXISTS idx_buildings_layer ON public.buildings (layer_id);
 CREATE INDEX IF NOT EXISTS idx_buildings_job   ON public.buildings (job_id);
+
+-- 7. Drawn footprints (POST /nodes, POST /regions with a `polygon` body).
+--    The outline a user draws when creating a target.
+--
+--    Regions already have a MultiPolygon `geom` to hold one. Nodes do not and
+--    cannot: osm.nodes.geom is a Point, and osm.build_way_geometry() in
+--    scripts/gis/schema.sql feeds it to ST_MakeLine, so widening its type would
+--    break way construction. Nodes therefore get a separate nullable column and
+--    keep `geom` as ST_PointOnSurface of the outline — interior even for a
+--    concave shape, which ST_Centroid would not guarantee.
+ALTER TABLE osm.nodes ADD COLUMN IF NOT EXISTS footprint GEOMETRY(MultiPolygon, 4326);
+CREATE INDEX IF NOT EXISTS idx_nodes_footprint ON osm.nodes USING GIST (footprint);
+
+-- Older databases may still have this NOT NULL; dropping it when it is already
+-- nullable is a no-op rather than an error.
+ALTER TABLE public.regions ALTER COLUMN geom DROP NOT NULL;

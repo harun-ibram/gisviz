@@ -13,6 +13,10 @@ CREATE SCHEMA IF NOT EXISTS osm;
 CREATE TABLE osm.nodes (
     node_id     BIGINT PRIMARY KEY,
     geom        GEOMETRY(Point, 4326) NOT NULL,
+    -- The area a user drew when creating this node, if any. Kept separate from
+    -- `geom` because build_way_geometry() below feeds `geom` to ST_MakeLine and
+    -- so requires it to stay a Point; the point is ST_PointOnSurface(footprint).
+    footprint   GEOMETRY(MultiPolygon, 4326),
     tags        JSONB NOT NULL DEFAULT '{}'::jsonb,
     version     INTEGER,
     changeset   BIGINT,
@@ -24,6 +28,7 @@ CREATE TABLE osm.nodes (
 );
 
 CREATE INDEX idx_nodes_geom ON osm.nodes USING GIST (geom);
+CREATE INDEX idx_nodes_footprint ON osm.nodes USING GIST (footprint);
 CREATE INDEX idx_nodes_tags ON osm.nodes USING GIN (tags);
 -- Only index nodes that actually carry meaningful tags (POIs) — most nodes
 -- are bare geometry vertices for ways and don't need to show up in POI search.

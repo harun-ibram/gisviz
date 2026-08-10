@@ -802,8 +802,8 @@
   border-radius: 50%;
 }
 
-.map-key-dot--splat { background: #eb6834; }
-.map-key-dot--empty { background: #b3a68f; }
+.map-key-dot--splat { background: var(--gv-splat-point); }
+.map-key-dot--empty { background: var(--gv-empty-point); }
 
 /* Counts and totals under the minimap. Sits outside the SVG so it stays
    legible at any viewport size instead of scaling with the viewBox. */

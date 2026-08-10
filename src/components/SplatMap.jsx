@@ -5,6 +5,7 @@ import { CircleMarker, MapContainer, TileLayer, Tooltip, useMap } from 'react-le
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { collectCoordinatePairs } from './libraryUtils.jsx'
 import { BASEMAPS, DEFAULT_CENTER, DEFAULT_ZOOM } from '../gis/basemaps.js'
+import { EMPTY_POINT, POINT_RING, SPLAT_POINT } from '../gis/gisGeo.js'
 
 /**
  * The viewer's location map: every node and region on a real basemap, with the
@@ -18,9 +19,7 @@ import { BASEMAPS, DEFAULT_CENTER, DEFAULT_ZOOM } from '../gis/basemaps.js'
 // Orange for "has a splat you can open", neutral for "nothing generated yet".
 // An absence is not a second category, so it gets no hue of its own. Both take
 // a dark ring so they stay separable on either basemap and where they overlap.
-const SPLAT_POINT = '#eb6834'
-const EMPTY_POINT = '#b3a68f'
-const POINT_RING = '#111722'
+// Shared with the coordinate picker and mirrored as CSS variables — see gisGeo.
 
 /**
  * One point per node/region.

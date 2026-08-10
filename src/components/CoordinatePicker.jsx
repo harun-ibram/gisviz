@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CircleMarker, MapContainer, Pane, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import { BASEMAPS, DEFAULT_CENTER, DEFAULT_ZOOM } from '../gis/basemaps.js'
-import { isRasterLayer, isVectorLayer } from '../gis/gisGeo.js'
+import { isRasterLayer, isVectorLayer, POINT_RING, SPLAT_POINT } from '../gis/gisGeo.js'
 import { useGisLibrary } from '../hooks/useGisLibrary.js'
 import GisRasterOverlay from './gis/GisRasterOverlay.jsx'
 import GisVectorLayer from './gis/GisVectorLayer.jsx'
@@ -116,7 +116,7 @@ function CoordinatePicker({ lat, lon, onPick }) {
             <CircleMarker
               center={[point.lat, point.lon]}
               radius={8}
-              pathOptions={{ color: '#111722', weight: 2, fillColor: '#eb6834', fillOpacity: 1 }}
+              pathOptions={{ color: POINT_RING, weight: 2, fillColor: SPLAT_POINT, fillOpacity: 1 }}
             />
           ) : null}
         </MapContainer>

@@ -4,6 +4,11 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
+  /* Map marker colours. CSS cannot import from JS, so these mirror
+     SPLAT_POINT / EMPTY_POINT in src/gis/gisGeo.js by hand — change both. */
+  --gv-splat-point: #eb6834;
+  --gv-empty-point: #b3a68f;
+
   --color-bg: #161826;
   --color-surface: #232532;
   --color-text: #e9e9ed;

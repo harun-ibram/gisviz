@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import * as THREE from 'three'
+import { NO_DATA_COLOUR, VOLUME_RAMP_DARK_BG } from '../gis/gisGeo.js'
+import { outerRings, volumeBreaks, volumeClass, volumeOf } from '../gis/buildings.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
@@ -77,41 +79,15 @@ const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
 
 const METRES_PER_DEGREE_LAT = 111320
 
-// Volume classes, matching the minimap's ramp so the same building reads the
-// same colour in both views. Merged per class, so this is 5 draw calls for the
-// whole city rather than one per building.
-const BUILDING_COLOURS = ['#3987e5', '#256abf', '#184f95', '#0d366b']
-const NO_DATA_COLOUR = '#a8a49a'
+// The dark-surface variant, not the map's: against this stage (#07111f) the
+// light ramp's darkest step measures 1.58:1 and simply disappears. Both ramps
+// index the same class list, so a building keeps its class across views.
+const BUILDING_COLOURS = VOLUME_RAMP_DARK_BG
 
 // Footprints with no usable LiDAR cover have no height to extrude. They are
 // still drawn, as a thin slab, so "we have this building but not its height"
 // is visible rather than silently absent.
 const UNMEASURED_HEIGHT_M = 0.4
-
-const outerRings = (geometry) => {
-  if (!geometry) return []
-  if (geometry.type === 'Polygon') return [geometry.coordinates[0]]
-  if (geometry.type === 'MultiPolygon') return geometry.coordinates.map((part) => part[0])
-  return []
-}
-
-const volumeOf = (properties) =>
-  properties?.volume_lidar_m3 ?? properties?.volume_prism_m3 ?? null
-
-const volumeBreaks = (volumes) => {
-  const sorted = volumes.filter((v) => v !== null && v > 0).sort((a, b) => a - b)
-  if (sorted.length === 0) return null
-  const at = (f) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))]
-  return [at(0.25), at(0.5), at(0.75)]
-}
-
-const classOf = (volume, breaks) => {
-  if (volume === null || breaks === null) return 0
-  if (volume <= breaks[0]) return 0
-  if (volume <= breaks[1]) return 1
-  if (volume <= breaks[2]) return 2
-  return 3
-}
 
 /**
  * Build one merged mesh per volume class from a GeoJSON FeatureCollection.
@@ -168,7 +144,11 @@ const buildBuildingMesh = (features) => {
       // and maps the shape's north axis onto -Z — the ENU convention.
       geometry.rotateX(-Math.PI / 2)
 
-      if (hasHeight) byClass[classOf(volumeOf(properties), breaks)].push(geometry)
+      // volumeClass returns null when the volume is unknown. A building can
+      // have a measured height but no volume, and that is not "smallest class"
+      // — it joins the uncovered ones rather than skewing the bottom bucket.
+      const klass = hasHeight ? volumeClass(volumeOf(properties), breaks) : null
+      if (klass !== null) byClass[klass].push(geometry)
       else unmeasured.push(geometry)
     }
   }

@@ -65,8 +65,8 @@ image = (
     # Ceres built from source too.
     #
     # Architectures are listed explicitly because build machines have no GPU,
-    # so `native` can't work: 75=T4, 80=A100, 86=A10G — keep in sync with the
-    # `gpu=` choices on the function below.
+    # so `native` can't work: 75=T4, 80=A100, 86=A10G, 90=H100 — keep in sync
+    # with the `gpu=` choices on the function below.
     .run_commands(
         "git clone --branch 3.8 --depth 1 https://github.com/colmap/colmap.git /tmp/colmap",
         # 3.8 bug in exactly our configuration (CUDA on, GUI off): sift.cc guards
@@ -79,7 +79,7 @@ image = (
         "cmake -S /tmp/colmap -B /tmp/colmap/build -GNinja"
         " -DCMAKE_BUILD_TYPE=Release"
         " -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc"
-        " -DCMAKE_CUDA_ARCHITECTURES='75;80;86'"
+        " -DCMAKE_CUDA_ARCHITECTURES='75;80;86;90'"
         " -DCUDA_ENABLED=ON"
         " -DGUI_ENABLED=OFF"
         " -DCGAL_ENABLED=OFF"
@@ -443,9 +443,9 @@ def _stage_mesh_inputs(client, work: str, config_path: str, work_prefix: str) ->
 
 
 @app.function(
-    # 24 GB; drop to "T4" for small scenes, bump to "A100" if OOM/timeout. If you
-    # add a card outside sm_75/80/86, add its arch to CMAKE_CUDA_ARCHITECTURES.
-    gpu="A10G",
+    # 80 GB; H100 is the only supported card here. If you add another card,
+    # add its arch to CMAKE_CUDA_ARCHITECTURES above.
+    gpu="H100",
     timeout=3600,  # splatfacto's 30k iters dominate; SfM is minutes on the GPU
     secrets=[
         modal.Secret.from_name("custom-secret"),
@@ -453,7 +453,13 @@ def _stage_mesh_inputs(client, work: str, config_path: str, work_prefix: str) ->
     ],
     image=image,
 )
-def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -> None:
+def process(
+    job_id: str,
+    input_prefix: str,
+    output_key: str,
+    webhook_url: str,
+    work_prefix: str | None = None,
+) -> None:
     client = _r2_client()
     try:
         work = tempfile.mkdtemp(prefix=f"job-{job_id}-")
@@ -530,9 +536,10 @@ def process(job_id: str, input_prefix: str, output_key: str, webhook_url: str) -
         # waiting on it, so a staging problem must cost them the mesh, not the
         # model. Without work_prefix in the payload the backend simply marks the
         # job's mesh stage skipped.
+        work_prefix = work_prefix or f"work/{job_id}/"
         try:
             mesh_inputs = _stage_mesh_inputs(
-                client, work, configs[0], f"work/{job_id}/"
+                client, work, configs[0], work_prefix
             )
         except Exception as exc:
             print(f"[mesh] staging failed, no mesh will be built: {exc}")

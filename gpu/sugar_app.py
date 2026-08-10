@@ -49,12 +49,12 @@ image = (
     # Same reason as the splat image: `add_python`'s interpreter reports clang
     # as its compiler and clang is not in this image. FORCE_CUDA/arch list are
     # for the two CUDA submodules, which compile on a build machine with no GPU
-    # — 75=T4, 80=A100, 86=A10G, matching the `gpu=` choices below.
+    # — 75=T4, 80=A100, 86=A10G, 90=H100, matching the `gpu=` choices below.
     .env({
         "CC": "gcc",
         "CXX": "g++",
         "FORCE_CUDA": "1",
-        "TORCH_CUDA_ARCH_LIST": "7.5;8.0;8.6",
+        "TORCH_CUDA_ARCH_LIST": "7.5;8.0;8.6;9.0",
     })
     # torch 2.1.0 rather than the splat image's 2.1.2, pinned to the newest
     # combination PyTorch3D publishes a prebuilt wheel for. Building PyTorch3D
@@ -94,14 +94,6 @@ image = (
         # dies with "No module named 'torch'" before it compiles anything.
         f"pip install --no-build-isolation {SUGAR_DIR}/gaussian_splatting/submodules/diff-gaussian-rasterization",
         f"pip install --no-build-isolation {SUGAR_DIR}/gaussian_splatting/submodules/simple-knn",
-        # Same flag again: nvdiffrast probes for torch while resolving its build
-        # requirements and aborts with its own "run pip install with
-        # --no-build-isolation" message otherwise. It is an optional dependency
-        # — SuGaR's textured-mesh export rasterizes with PyTorch3D
-        # (sugar_extractors/refined_mesh.py) and never reaches for it — so if
-        # this line ever becomes a maintenance burden, deleting it costs nothing
-        # on the path this pipeline actually takes.
-        "pip install --no-build-isolation git+https://github.com/NVlabs/nvdiffrast.git",
         # Both submodules compile CUDA against whatever torch is present. If the
         # arch list or FORCE_CUDA above ever drifts they fail silently at import
         # rather than at build, an hour into someone's job.
@@ -256,10 +248,10 @@ def _write_gs_checkpoint(gs_dir: str, scene_dir: str, normalized_ply: str) -> No
 
 
 @app.function(
-    # 24 GB. SuGaR's memory ceiling is the coarse stage's densified gaussians,
-    # not the mesh; --high_poly (1M vertices) and a "long" refinement want an
-    # A100 instead, and its arch is already in the build's arch list.
-    gpu="A10G",
+    # 80 GB. SuGaR's memory ceiling is the coarse stage's densified gaussians,
+    # not the mesh; H100 is the supported card here, and its arch is already
+    # in the build's arch list.
+    gpu="H100",
     timeout=5400,  # coarse training + Poisson + refinement + texturing
     secrets=[
         modal.Secret.from_name("custom-secret"),

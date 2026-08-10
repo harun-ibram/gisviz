@@ -49,12 +49,12 @@ image = (
     # Same reason as the splat image: `add_python`'s interpreter reports clang
     # as its compiler and clang is not in this image. FORCE_CUDA/arch list are
     # for the two CUDA submodules, which compile on a build machine with no GPU
-    # — 75=T4, 80=A100, 86=A10G, matching the `gpu=` choices below.
+    # — 75=T4, 80=A100, 86=A10G, 90=H100, matching the `gpu=` choices below.
     .env({
         "CC": "gcc",
         "CXX": "g++",
         "FORCE_CUDA": "1",
-        "TORCH_CUDA_ARCH_LIST": "7.5;8.0;8.6",
+        "TORCH_CUDA_ARCH_LIST": "7.5;8.0;8.6;9.0",
     })
     # torch 2.1.0 rather than the splat image's 2.1.2, pinned to the newest
     # combination PyTorch3D publishes a prebuilt wheel for. Building PyTorch3D
@@ -256,10 +256,9 @@ def _write_gs_checkpoint(gs_dir: str, scene_dir: str, normalized_ply: str) -> No
 
 
 @app.function(
-    # 24 GB. SuGaR's memory ceiling is the coarse stage's densified gaussians,
-    # not the mesh; --high_poly (1M vertices) and a "long" refinement want an
-    # A100 instead, and its arch is already in the build's arch list.
-    gpu="A10G",
+    # 80 GB. H100 is the only supported card here; its arch is in the build's
+    # arch list above.
+    gpu="H100",
     timeout=5400,  # coarse training + Poisson + refinement + texturing
     secrets=[
         modal.Secret.from_name("custom-secret"),

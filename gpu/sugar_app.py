@@ -321,7 +321,7 @@ def mesh(
             ["python", "train_full_pipeline.py",
              "-s", scene_dir,
              "--gs_output_dir", gs_dir,
-             "-r", "dn_consistency",
+             "-r", "density",
              "--low_poly", "True",
              "--refinement_time", "short",
              "--export_obj", "True",

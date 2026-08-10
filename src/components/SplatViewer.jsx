@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
+import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import * as THREE from 'three'
-import { NO_DATA_COLOUR, VOLUME_RAMP_DARK_BG } from '../gis/gisGeo.js'
+import { NO_DATA_COLOUR, VOLUME_CLASS_LABELS, VOLUME_RAMP_DARK_BG } from '../gis/gisGeo.js'
 import { outerRings, volumeBreaks, volumeClass, volumeOf } from '../gis/buildings.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
@@ -90,16 +91,22 @@ const BUILDING_COLOURS = VOLUME_RAMP_DARK_BG
 const UNMEASURED_HEIGHT_M = 0.4
 
 /**
- * Build one merged mesh per volume class from a GeoJSON FeatureCollection.
+ * Build the building scene: one merged mesh per volume class, plus the flat
+ * patches for any area the user drew but LiDAR never measured.
  *
- * Returns { group, centre, radius, measured, total } or null. `centre` is the
- * lon/lat the frame is anchored at — every vertex is metres from it, which
- * keeps coordinates small enough for float32 to stay precise (raw WGS84
- * degrees scaled to metres would be ~5e6 and visibly jitter).
+ * Returns { group, origin, radius, measured, total, drawn } or null.
+ *
+ * `origin` is the lon/lat the frame is anchored at. Every vertex is metres from
+ * it, which keeps coordinates small enough for float32 to stay precise — raw
+ * WGS84 scaled to metres would be ~5e6 and visibly jitter. It is *returned*
+ * rather than discarded so a second source can be placed in the same frame and
+ * so the group stays georeferenced in principle.
  */
-const buildBuildingMesh = (features) => {
+const buildBuildingMesh = (features, drawnFeatures = []) => {
   let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity
-  for (const feature of features) {
+  // Both collections feed the bbox, so one origin serves both and the drawn
+  // areas land in the right place relative to the measured buildings.
+  for (const feature of [...features, ...drawnFeatures]) {
     for (const ring of outerRings(feature.geometry)) {
       for (const [lon, lat] of ring) {
         minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon)
@@ -113,6 +120,9 @@ const buildBuildingMesh = (features) => {
   const originLat = (minLat + maxLat) / 2
   const metresPerLon = METRES_PER_DEGREE_LAT * Math.cos((originLat * Math.PI) / 180)
 
+  // Drawn areas are deliberately absent here: they carry no volume, and feeding
+  // them in would invite someone to "fix" the nulls with a zero and skew the
+  // quartiles that every building's colour depends on.
   const breaks = volumeBreaks(features.map((f) => volumeOf(f.properties)))
   const byClass = BUILDING_COLOURS.map(() => [])
   const unmeasured = []
@@ -174,14 +184,86 @@ const buildBuildingMesh = (features) => {
   byClass.forEach((geometries, index) => addBatch(geometries, BUILDING_COLOURS[index], 1))
   addBatch(unmeasured, NO_DATA_COLOUR, 0.55)
 
+  // ---- areas the user drew, with no LiDAR behind them ---------------------
+  // Flat, not extruded: the ask was to mark the surface, not to guess a height.
+  const patches = []
+  let drawn = 0
+
+  for (const feature of drawnFeatures) {
+    for (const ring of outerRings(feature.geometry)) {
+      if (ring.length < 4) continue
+
+      const shape = new THREE.Shape()
+      ring.forEach(([lon, lat], index) => {
+        const east = (lon - originLon) * metresPerLon
+        const north = (lat - originLat) * METRES_PER_DEGREE_LAT
+        if (index === 0) shape.moveTo(east, north)
+        else shape.lineTo(east, north)
+      })
+
+      const geometry = new THREE.ShapeGeometry(shape)
+      geometry.rotateX(-Math.PI / 2)
+      // 2 cm off the ground so it does not z-fight with the base faces of any
+      // extrusion sitting on the same spot.
+      geometry.translate(0, 0.02, 0)
+      patches.push(geometry)
+      drawn += 1
+    }
+  }
+
+  if (patches.length > 0) {
+    const merged = mergeGeometries(patches, false)
+    patches.forEach((geometry) => geometry.dispose())
+    if (merged) {
+      // MeshBasic, not Standard: a patch lying on the ground has no business
+      // being lit, and shading it would read as a surface with relief.
+      group.add(new THREE.Mesh(merged, new THREE.MeshBasicMaterial({
+        color: new THREE.Color(BUILDING_COLOURS[0]),
+        transparent: true,
+        opacity: 0.28,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })))
+      // The outline at full opacity is what keeps it legible at grazing angles
+      // on a dark stage; the translucent fill alone disappears.
+      group.add(new THREE.LineSegments(
+        new THREE.EdgesGeometry(merged),
+        new THREE.LineBasicMaterial({ color: new THREE.Color(BUILDING_COLOURS[0]) }),
+      ))
+    }
+  }
+
   const halfWidth = ((maxLon - minLon) * metresPerLon) / 2
   const halfDepth = ((maxLat - minLat) * METRES_PER_DEGREE_LAT) / 2
   return {
     group,
+    origin: { lon: originLon, lat: originLat },
     radius: Math.max(Math.hypot(halfWidth, halfDepth), 10),
     measured,
     total: features.length,
+    drawn,
   }
+}
+
+// A drawn area larger than this is almost certainly an imported administrative
+// boundary rather than something someone traced around a building. One county
+// would push `radius` to ~50 km and park the camera in orbit.
+const MAX_DRAWN_SPAN_M = 5000
+
+/** Skip a footprint whose bbox diagonal is implausibly large. */
+const withinSizeCap = (feature) => {
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity
+  for (const ring of outerRings(feature.geometry)) {
+    for (const [lon, lat] of ring) {
+      minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon)
+      minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat)
+    }
+  }
+  if (!Number.isFinite(minLon)) return false
+  const midLat = (minLat + maxLat) / 2
+  const width = (maxLon - minLon) * METRES_PER_DEGREE_LAT * Math.cos((midLat * Math.PI) / 180)
+  const depth = (maxLat - minLat) * METRES_PER_DEGREE_LAT
+  return Math.hypot(width, depth) <= MAX_DRAWN_SPAN_M
 }
 
 // Don't steal keystrokes from a form control the user is actually typing in.
@@ -190,6 +272,8 @@ const isTypingTarget = (target) =>
 
   function SplatViewer() {
     const location = useLocation()
+    // Already fetched app-wide, so the drawn outline costs no extra request.
+    const { allNodes, allRegions } = useSplatLibrary()
     const stageRef = useRef(null)
     const sceneRef = useRef(null)
     const rendererRef = useRef(null)
@@ -796,6 +880,37 @@ const isTypingTarget = (target) =>
       meshRef.current = null
     }, [])
 
+    // The outline of the splat currently open, if its target has one. No new
+    // endpoint: the library context already holds every node and region, so the
+    // target is found by matching model_path against the path we were navigated
+    // with.
+    const drawnFeatures = useMemo(() => {
+      const modelPath = location.state?.modelPath
+      if (!modelPath) return []
+
+      const node = (allNodes ?? []).find(
+        (entry) => entry.model_path === modelPath && entry.footprint,
+      )
+      if (node) {
+        return [{ geometry: node.footprint }].filter(withinSizeCap)
+      }
+
+      const region = (allRegions ?? []).find(
+        // source === 'drawn' keeps imported administrative boundaries out: one
+        // county would blow the scene radius out to tens of kilometres and put
+        // the camera in orbit, which reads as a broken feature.
+        (entry) => entry.model_path === modelPath && entry.geom && entry.source === 'drawn',
+      )
+      return region ? [{ geometry: region.geom }].filter(withinSizeCap) : []
+    }, [allNodes, allRegions, location.state])
+
+    // Read inside the fetch callback, which would otherwise close over the
+    // value from the render that started the request.
+    const drawnFeaturesRef = useRef(drawnFeatures)
+    useEffect(() => {
+      drawnFeaturesRef.current = drawnFeatures
+    }, [drawnFeatures])
+
     // Fetch and build the mesh the first time buildings are switched on, then
     // just toggle its visibility — re-extruding a city on every click would
     // stall the render loop for seconds.
@@ -819,14 +934,19 @@ const isTypingTarget = (target) =>
         .then((collection) => {
           const scene = sceneRef.current
           if (!active || !scene) return
-          const built = buildBuildingMesh(collection.features ?? [])
+          const built = buildBuildingMesh(collection.features ?? [], drawnFeaturesRef.current)
           if (!built) {
             setBuildingsInfo({ kind: 'empty' })
             return
           }
           scene.add(built.group)
           buildingsRef.current = built
-          setBuildingsInfo({ kind: 'ready', measured: built.measured, total: built.total })
+          setBuildingsInfo({
+            kind: 'ready',
+            measured: built.measured,
+            total: built.total,
+            drawn: built.drawn,
+          })
           frameBuildings()
         })
         .catch((fetchError) => {
@@ -996,7 +1116,12 @@ const isTypingTarget = (target) =>
             {buildingsOn && buildingsInfo && !error && !meshAlert ? (
               <div className="gv-stage-alert gv-stage-alert--info">
                 {buildingsInfo.kind === 'ready'
-                  ? `${buildingsInfo.measured} of ${buildingsInfo.total} buildings measured · 1 unit = 1 m · not aligned to the splat`
+                  ? [
+                      `${buildingsInfo.measured} of ${buildingsInfo.total} buildings measured`,
+                      buildingsInfo.drawn ? `${buildingsInfo.drawn} drawn surface${buildingsInfo.drawn === 1 ? '' : 's'}` : null,
+                      '1 unit = 1 m',
+                      'not aligned to the splat',
+                    ].filter(Boolean).join(' · ')
                   : buildingsInfo.kind === 'empty'
                     ? 'No measured buildings yet — upload a LiDAR tile and an OSM extract.'
                     : buildingsInfo.message}
@@ -1032,6 +1157,38 @@ const isTypingTarget = (target) =>
                     <span className="gv-rotate-value">{Math.round(rotation[key])}°</span>
                   </label>
                 ))}
+              </div>
+            ) : null}
+
+            {/* Volume legend, ported from the SVG minimap before it was
+                deleted. With four blue classes plus grey plus a translucent
+                patch, colour alone stops being self-explanatory. */}
+            {buildingsOn && buildingsInfo?.kind === 'ready' ? (
+              <div className="gv-volume-legend">
+                <span className="gv-volume-legend-title">Building volume</span>
+                {VOLUME_CLASS_LABELS.map((label, index) => (
+                  <span key={label} className="gv-volume-legend-item">
+                    <i style={{ background: BUILDING_COLOURS[index] }} aria-hidden="true" />
+                    {label}
+                  </span>
+                ))}
+                <span className="gv-volume-legend-item">
+                  <i style={{ background: NO_DATA_COLOUR, opacity: 0.55 }} aria-hidden="true" />
+                  no LiDAR cover
+                </span>
+                {buildingsInfo.drawn ? (
+                  <span className="gv-volume-legend-item">
+                    <i
+                      style={{
+                        background: BUILDING_COLOURS[0],
+                        opacity: 0.28,
+                        outline: `1px solid ${BUILDING_COLOURS[0]}`,
+                      }}
+                      aria-hidden="true"
+                    />
+                    drawn area, height unknown
+                  </span>
+                ) : null}
               </div>
             ) : null}
 

@@ -21,6 +21,10 @@ export const BASEMAPS = {
     id: 'osm',
     label: 'Streets',
     url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    // The URL has no {s}, so no request is ever sharded — but Leaflet calls
+    // _getSubdomain() for every tile regardless and throws on undefined, and
+    // passing the prop through explicitly overrides its own 'abc' default.
+    subdomains: 'abc',
     maxZoom: 20,
     maxNativeZoom: 19,
     attribution: '&copy; OpenStreetMap contributors',

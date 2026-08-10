@@ -600,6 +600,47 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* — coordinate picker —
+   Also carries .gv-gis-map, so it inherits that scope's Leaflet dark restyle. */
+.gv-coord-picker {
+  margin-top: var(--space-3);
+}
+
+.gv-coord-picker-canvas {
+  height: 220px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.gv-coord-picker-canvas .gv-leaflet {
+  width: 100%;
+  height: 100%;
+}
+
+/* The whole map is a target, so say so with the cursor. */
+.gv-coord-picker-canvas .leaflet-container { cursor: crosshair; }
+
+.gv-coord-picker-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gv-coord-note {
+  margin: var(--space-3) 0 0;
+  font-size: 12px;
+}
+
+/* Darken the light OSM tiles without inverting the marker over them. */
+.gv-coord-picker-canvas[data-basemap="osm"] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+}
+
 /* — rotation sliders —
    Floats over the stage rather than living in the toolbar, which is already
    full; top-right so it clears the hint strip along the bottom. */

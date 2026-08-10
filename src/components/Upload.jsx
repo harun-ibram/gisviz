@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { useAuth } from '../hooks/useAuth.js'
 import SignInNotice from './auth/SignInNotice.jsx'
+import CoordinatePicker from './CoordinatePicker.jsx'
 import { IconArrowRight, IconClose, IconNode, IconRegion, IconSearch, IconUpload } from './icons.jsx'
 
 const POLL_INTERVAL_MS = 3000
@@ -544,6 +545,22 @@ function Upload() {
                                         </div>
                                     </div>
                                 ) : null}
+
+                                {targetType === 'node' ? (
+                                    <CoordinatePicker
+                                        lat={newLat}
+                                        lon={newLon}
+                                        onPick={(lat, lon) => {
+                                            setNewLat(String(lat))
+                                            setNewLon(String(lon))
+                                        }}
+                                    />
+                                ) : (
+                                    <p className="text-muted gv-coord-note">
+                                        Regions are created with a name only — the backend has no
+                                        boundary field yet, so there is nothing to place on a map.
+                                    </p>
+                                )}
                             </div>
                         )}
                     </section>

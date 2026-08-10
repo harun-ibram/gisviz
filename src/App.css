@@ -636,6 +636,19 @@
   font-size: 12px;
 }
 
+/* Undo / Clear sit next to the basemap toggle under the drawing map. */
+.gv-coord-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+  width: auto;
+}
+
 /* Collapsed by default: the picker is a field in a form, not a GIS workspace. */
 .gv-coord-layers {
   font-size: 12px;

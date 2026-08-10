@@ -9,12 +9,12 @@
  * Get it wrong and Bucharest (44.4N, 26.1E) renders at 26.1N, 44.4E — the Saudi
  * desert. That off-by-a-continent is the acceptance test.
  *
- * This is the ONLY export in the codebase that produces Leaflet-order data, and
- * Leaflet-order bounds are never stored in the provider. Exactly three call
- * sites consume it: `<ImageOverlay bounds>`, `map.fitBounds` and `<Rectangle
- * bounds>`. Everything else — including `bounds_geojson` and fetched
- * FeatureCollections — stays lon/lat, which Leaflet's GeoJSON layer handles
- * itself.
+ * One of only two exports that produce Leaflet-order data — `ringToLatLngs`
+ * below is the other, for drawn polygons — and Leaflet-order bounds are never
+ * stored in the provider. Exactly three call sites consume this one:
+ * `<ImageOverlay bounds>`, `map.fitBounds` and `<Rectangle bounds>`. Everything
+ * else — including `bounds_geojson` and fetched FeatureCollections — stays
+ * lon/lat, which Leaflet's GeoJSON layer handles itself.
  */
 export function toLeafletBounds(bounds) {
     if (!Array.isArray(bounds) || bounds.length !== 4) {
@@ -94,6 +94,18 @@ export function mapBoundsToApiBbox(leafletBounds) {
         leafletBounds.getEast(),
         leafletBounds.getNorth(),
     ]
+}
+
+/**
+ * A [[lon, lat], ...] ring as Leaflet-order positions, for `<Polygon positions>`
+ * and `<Polyline positions>`.
+ *
+ * The second and last Leaflet-order producer; see the header on
+ * `toLeafletBounds`. Rings are stored lon/lat everywhere else, because that is
+ * what GeoJSON and the API use.
+ */
+export function ringToLatLngs(ring) {
+    return (ring ?? []).map(([lon, lat]) => [lat, lon])
 }
 
 /** The 5-stop terrain LUT `scripts/gis/gis_common.py` colourises rasters with. */

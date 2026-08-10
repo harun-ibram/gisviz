@@ -69,7 +69,14 @@ function styleFor(layer) {
     return { color, weight: 1.2, opacity: 0.95, fillColor: color, fillOpacity: 0.22 }
 }
 
-export default function GisVectorLayer({ layer, onStatus }) {
+/**
+ * `interactive` exists for the polygon picker. Leaflet path clicks do not bubble
+ * to the map's own click handler, so an interactive vector layer silently eats
+ * every click that lands on a feature — which on a drawing surface reads as
+ * "half my vertices didn't register". Passing false makes the layer pure
+ * decoration and lets clicks through to the map underneath.
+ */
+export default function GisVectorLayer({ layer, onStatus, interactive = true }) {
     const { setFeatureFocus } = useGisLibrary()
     const { url, refresh } = useAssetUrl(layer.geojson_key, layer.geojson_url)
 
@@ -159,17 +166,18 @@ export default function GisVectorLayer({ layer, onStatus }) {
             key={layer.layer_id}
             data={data}
             pane="gis-vector"
-            style={() => styleFor(layer)}
+            style={() => ({ ...styleFor(layer), interactive })}
             // Never L.marker: its default icon resolves marker-icon.png through
             // the bundler and 404s under Vite. circleMarker sidesteps the whole
             // L.Icon.Default patching ritual and draws on the canvas renderer.
             pointToLayer={(feature, latlng) => L.circleMarker(latlng, {
                 radius: 4,
                 ...styleFor(layer),
+                interactive,
             })}
             // One layer-level handler instead of onEachFeature popup binding:
             // binding 48k Popup objects destroys the canvas renderer's advantage.
-            eventHandlers={{
+            eventHandlers={interactive ? {
                 click: (event) => {
                     const properties = event.propagatedFrom?.feature?.properties
 
@@ -177,7 +185,7 @@ export default function GisVectorLayer({ layer, onStatus }) {
                         setFeatureFocus({ layerId: layer.layer_id, layerName: layer.name, properties })
                     }
                 },
-            }}
+            } : undefined}
         />
     )
 }

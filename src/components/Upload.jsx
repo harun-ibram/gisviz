@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { useAuth } from '../hooks/useAuth.js'
 import SignInNotice from './auth/SignInNotice.jsx'
-import CoordinatePicker from './CoordinatePicker.jsx'
+import PolygonPicker from './PolygonPicker.jsx'
 import { IconArrowRight, IconClose, IconNode, IconRegion, IconSearch, IconUpload } from './icons.jsx'
 
 const POLL_INTERVAL_MS = 3000
@@ -150,8 +150,10 @@ function Upload() {
     const [selectedId, setSelectedId] = useState(null)
 
     const [newName, setNewName] = useState('')
-    const [newLat, setNewLat] = useState('')
-    const [newLon, setNewLon] = useState('')
+    // The drawn outline, [[lon, lat], ...] in API order. Replaces the old
+    // lat/lon pair: with a polygon there is no single point to type, and keeping
+    // both would need a precedence rule with no defensible answer.
+    const [newPolygon, setNewPolygon] = useState([])
 
     const [files, setFiles] = useState([])
     const [dragging, setDragging] = useState(false)
@@ -172,7 +174,7 @@ function Upload() {
         document.title = 'Upload'
     }, [])
 
-    // All nodes/regions, not just processed ones — /splat_nodes and /splat_regions
+    // All nodes/regions, not just processed ones â€” /splat_nodes and /splat_regions
     // only return features that already have a model_path.
     useEffect(() => {
         let active = true
@@ -263,9 +265,10 @@ function Upload() {
 
     const targetReady = mode === 'existing'
         ? Boolean(selectedId)
-        : Boolean(newName.trim()) && (targetType === 'region' || (newLat !== '' && newLon !== ''))
+        // Both types now need an outline, so regions no longer bypass the check.
+        : Boolean(newName.trim()) && newPolygon.length >= 3
 
-    // The client gate is UX, not security — the three POSTs below are still
+    // The client gate is UX, not security â€” the three POSTs below are still
     // rejected by the backend without a token.
     const canProcess = targetReady && files.length > 0 && !running && isAuthed
 
@@ -314,14 +317,18 @@ function Upload() {
 
         // A token that expired mid-session should open the login popup rather
         // than surface as a raw error string.
-        const checkWrite = (response, message) => {
+        // Async so it can read `detail`. The server sends actionable validation
+        // messages ("that outline is not a usable areaâ€¦"); without this they are
+        // all replaced by a bare "Unable to create node (400)".
+        const checkWrite = async (response, message) => {
             if (response.status === 401) {
                 handleUnauthorized()
                 throw new Error('Your session expired. Sign in again to continue.')
             }
 
             if (!response.ok) {
-                throw new Error(message)
+                const body = await response.json().catch(() => null)
+                throw new Error(body?.detail || message)
             }
         }
 
@@ -331,12 +338,13 @@ function Upload() {
             let name = items.find((item) => item.id === selectedId)?.name ?? ''
 
             if (mode === 'new') {
-                setStatus(`Creating ${targetType}…`)
+                setStatus(`Creating ${targetType}â€¦`)
                 name = newName.trim()
 
-                const body = targetType === 'node'
-                    ? { name, lat: Number(newLat), lon: Number(newLon) }
-                    : { name }
+                // One shape for both types now. The server closes the ring,
+                // derives a node's point with ST_PointOnSurface, and tags a
+                // drawn region with source='drawn'.
+                const body = { name, polygon: newPolygon }
 
                 const createResponse = await fetch(`${apiBaseUrl}/${targetType}s`, {
                     method: 'POST',
@@ -344,14 +352,14 @@ function Upload() {
                     body: JSON.stringify(body),
                 })
 
-                checkWrite(createResponse, `Unable to create ${targetType} (${createResponse.status})`)
+                await checkWrite(createResponse, `Unable to create ${targetType} (${createResponse.status})`)
 
                 const created = await createResponse.json()
                 id = String(targetType === 'node' ? created.node_id : created.id)
                 type = targetType
             }
 
-            setStatus('Creating job…')
+            setStatus('Creating jobâ€¦')
 
             const jobResponse = await fetch(`${apiBaseUrl}/jobs`, {
                 method: 'POST',
@@ -364,14 +372,14 @@ function Upload() {
                 }),
             })
 
-            checkWrite(jobResponse, `Unable to create job (${jobResponse.status})`)
+            await checkWrite(jobResponse, `Unable to create job (${jobResponse.status})`)
 
             const { job_id: jobId, upload_urls: uploadUrls } = await jobResponse.json()
 
-            setStatus(`Uploading photo 0/${files.length}…`)
+            setStatus(`Uploading photo 0/${files.length}â€¦`)
 
             const { skipped } = await uploadFilesInBatches(files, uploadUrls, (done, total) => {
-                setStatus(`Uploading photo ${done}/${total}…`)
+                setStatus(`Uploading photo ${done}/${total}â€¦`)
             })
 
             if (skipped.length > 0) {
@@ -381,18 +389,18 @@ function Upload() {
                 )
             }
 
-            setStatus('Starting job…')
+            setStatus('Starting jobâ€¦')
 
             const startResponse = await fetch(`${apiBaseUrl}/jobs/${jobId}/start`, {
                 method: 'POST',
                 headers: authHeaders,
             })
 
-            checkWrite(startResponse, `Unable to start job (${startResponse.status})`)
+            await checkWrite(startResponse, `Unable to start job (${startResponse.status})`)
 
             setStatus(wantMesh
-                ? 'Processing the splat (this can take a while)…'
-                : 'Processing (this can take a while)…')
+                ? 'Processing the splat (this can take a while)â€¦'
+                : 'Processing (this can take a while)â€¦')
 
             const job = await pollUntilDone(jobId)
 
@@ -406,7 +414,7 @@ function Upload() {
                 setNotice((current) => [
                     current,
                     'The splat is ready. The mesh is still building and will attach to this'
-                    + ' target on its own — you can leave this page.',
+                    + ' target on its own â€” you can leave this page.',
                 ].filter(Boolean).join(' '))
             }
         } catch (processError) {
@@ -456,14 +464,14 @@ function Upload() {
                             <button
                                 type="button"
                                 className={`btn ${targetType === 'node' ? 'btn-primary' : 'btn-secondary'}`}
-                                onClick={() => { setTargetType('node'); setSelectedId(null) }}
+                                onClick={() => { setTargetType('node'); setSelectedId(null); setNewPolygon([]) }}
                             >
                                 Node
                             </button>
                             <button
                                 type="button"
                                 className={`btn ${targetType === 'region' ? 'btn-primary' : 'btn-secondary'}`}
-                                onClick={() => { setTargetType('region'); setSelectedId(null) }}
+                                onClick={() => { setTargetType('region'); setSelectedId(null); setNewPolygon([]) }}
                             >
                                 Region
                             </button>
@@ -499,7 +507,7 @@ function Upload() {
                                         ))
                                     ) : (
                                         <p className="text-muted gv-empty-row">
-                                            {targetsLoading ? `Loading ${targetType}s…` : `No ${targetType}s found.`}
+                                            {targetsLoading ? `Loading ${targetType}sâ€¦` : `No ${targetType}s found.`}
                                         </p>
                                     )}
                                 </div>
@@ -517,50 +525,10 @@ function Upload() {
                                     />
                                 </div>
 
-                                {targetType === 'node' ? (
-                                    <div className="gv-coord-fields">
-                                        <div className="field">
-                                            <label className="gv-detail-label" htmlFor="new-lat">Latitude</label>
-                                            <input
-                                                id="new-lat"
-                                                className="input"
-                                                type="number"
-                                                step="any"
-                                                placeholder="45.75372"
-                                                value={newLat}
-                                                onChange={(event) => setNewLat(event.target.value)}
-                                            />
-                                        </div>
-                                        <div className="field">
-                                            <label className="gv-detail-label" htmlFor="new-lon">Longitude</label>
-                                            <input
-                                                id="new-lon"
-                                                className="input"
-                                                type="number"
-                                                step="any"
-                                                placeholder="21.22571"
-                                                value={newLon}
-                                                onChange={(event) => setNewLon(event.target.value)}
-                                            />
-                                        </div>
-                                    </div>
-                                ) : null}
-
-                                {targetType === 'node' ? (
-                                    <CoordinatePicker
-                                        lat={newLat}
-                                        lon={newLon}
-                                        onPick={(lat, lon) => {
-                                            setNewLat(String(lat))
-                                            setNewLon(String(lon))
-                                        }}
-                                    />
-                                ) : (
-                                    <p className="text-muted gv-coord-note">
-                                        Regions are created with a name only — the backend has no
-                                        boundary field yet, so there is nothing to place on a map.
-                                    </p>
-                                )}
+                                <div className="field">
+                                    <label className="gv-detail-label">Outline</label>
+                                    <PolygonPicker value={newPolygon} onChange={setNewPolygon} />
+                                </div>
                             </div>
                         )}
                     </section>
@@ -582,7 +550,7 @@ function Upload() {
                         >
                             <IconUpload />
                             <span className="gv-dropzone-text">Drop photos here or click to browse</span>
-                            <span className="text-muted gv-dropzone-hint">Images only · a full set of one scene</span>
+                            <span className="text-muted gv-dropzone-hint">Images only Â· a full set of one scene</span>
                             <input
                                 ref={fileInputRef}
                                 type="file"
@@ -620,7 +588,7 @@ function Upload() {
 
                         <div className="gv-upload-options">
                             {/* The .radio/.dot pair is the app's existing boolean
-                                control (see the GIS layer library's filters) —
+                                control (see the GIS layer library's filters) â€”
                                 a real checkbox for semantics, a styled dot for
                                 the affordance. */}
                             <label className="radio">
@@ -636,8 +604,8 @@ function Upload() {
                             <p className="text-muted gv-upload-option-help">
                                 A textured mesh gives you actual geometry to measure, occlude or
                                 export, but it runs as a second pass over the finished splat and
-                                roughly doubles processing time. The splat itself is ready — and
-                                viewable — before the mesh starts.
+                                roughly doubles processing time. The splat itself is ready â€” and
+                                viewable â€” before the mesh starts.
                             </p>
                         </div>
                     </section>
@@ -666,10 +634,20 @@ function Upload() {
                             <span className="gv-detail-label">Photos</span>
                             <span className="gv-detail-value">{files.length}</span>
                         </div>
+                        {mode === 'new' ? (
+                            <div className="gv-detail-row">
+                                <span className="gv-detail-label">Outline</span>
+                                <span className="gv-detail-value">
+                                    {newPolygon.length === 0
+                                        ? 'Not drawn'
+                                        : `${newPolygon.length} corners`}
+                                </span>
+                            </div>
+                        ) : null}
                         <div className="gv-detail-row">
                             <span className="gv-detail-label">Mesh</span>
                             <span className="gv-detail-value">
-                                {wantMesh ? 'Yes · slower' : 'No'}
+                                {wantMesh ? 'Yes Â· slower' : 'No'}
                             </span>
                         </div>
                     </div>
@@ -704,7 +682,7 @@ function Upload() {
                             onClick={handleProcess}
                         >
                             <IconUpload />
-                            {running ? 'Processing…' : 'Process'}
+                            {running ? 'Processingâ€¦' : 'Process'}
                         </button>
                     )}
 

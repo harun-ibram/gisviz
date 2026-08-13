@@ -174,7 +174,7 @@ function Upload() {
         document.title = 'Upload'
     }, [])
 
-    // All nodes/regions, not just processed ones â€” /splat_nodes and /splat_regions
+    // All nodes/regions, not just processed ones /splat_nodes and /splat_regions
     // only return features that already have a model_path.
     useEffect(() => {
         let active = true
@@ -376,10 +376,10 @@ function Upload() {
 
             const { job_id: jobId, upload_urls: uploadUrls } = await jobResponse.json()
 
-            setStatus(`Uploading photo 0/${files.length}â€¦`)
+            setStatus(`Uploading photo 0/${files.length}`)
 
             const { skipped } = await uploadFilesInBatches(files, uploadUrls, (done, total) => {
-                setStatus(`Uploading photo ${done}/${total}â€¦`)
+                setStatus(`Uploading photo ${done}/${total}`)
             })
 
             if (skipped.length > 0) {
@@ -389,7 +389,7 @@ function Upload() {
                 )
             }
 
-            setStatus('Starting jobâ€¦')
+            setStatus('Starting job')
 
             const startResponse = await fetch(`${apiBaseUrl}/jobs/${jobId}/start`, {
                 method: 'POST',
@@ -399,8 +399,8 @@ function Upload() {
             await checkWrite(startResponse, `Unable to start job (${startResponse.status})`)
 
             setStatus(wantMesh
-                ? 'Processing the splat (this can take a while)â€¦'
-                : 'Processing (this can take a while)â€¦')
+                ? 'Processing the splat (this can take a while)'
+                : 'Processing (this can take a while)')
 
             const job = await pollUntilDone(jobId)
 
@@ -414,7 +414,7 @@ function Upload() {
                 setNotice((current) => [
                     current,
                     'The splat is ready. The mesh is still building and will attach to this'
-                    + ' target on its own â€” you can leave this page.',
+                    + ' target on its own you can leave this page.',
                 ].filter(Boolean).join(' '))
             }
         } catch (processError) {
@@ -507,7 +507,7 @@ function Upload() {
                                         ))
                                     ) : (
                                         <p className="text-muted gv-empty-row">
-                                            {targetsLoading ? `Loading ${targetType}sâ€¦` : `No ${targetType}s found.`}
+                                            {targetsLoading ? `Loading ${targetType}s...` : `No ${targetType}s found.`}
                                         </p>
                                     )}
                                 </div>
@@ -550,7 +550,7 @@ function Upload() {
                         >
                             <IconUpload />
                             <span className="gv-dropzone-text">Drop photos here or click to browse</span>
-                            <span className="text-muted gv-dropzone-hint">Images only Â· a full set of one scene</span>
+                            <span className="text-muted gv-dropzone-hint">Images only a full set of one scene</span>
                             <input
                                 ref={fileInputRef}
                                 type="file"
@@ -588,7 +588,7 @@ function Upload() {
 
                         <div className="gv-upload-options">
                             {/* The .radio/.dot pair is the app's existing boolean
-                                control (see the GIS layer library's filters) â€”
+                                control (see the GIS layer library's filters)
                                 a real checkbox for semantics, a styled dot for
                                 the affordance. */}
                             <label className="radio">
@@ -604,8 +604,8 @@ function Upload() {
                             <p className="text-muted gv-upload-option-help">
                                 A textured mesh gives you actual geometry to measure, occlude or
                                 export, but it runs as a second pass over the finished splat and
-                                roughly doubles processing time. The splat itself is ready â€” and
-                                viewable â€” before the mesh starts.
+                                roughly doubles processing time. The splat itself is ready and
+                                viewable before the mesh starts.
                             </p>
                         </div>
                     </section>
@@ -647,7 +647,7 @@ function Upload() {
                         <div className="gv-detail-row">
                             <span className="gv-detail-label">Mesh</span>
                             <span className="gv-detail-value">
-                                {wantMesh ? 'Yes Â· slower' : 'No'}
+                                {wantMesh ? 'Yes (slower)' : 'No'}
                             </span>
                         </div>
                     </div>
@@ -682,7 +682,7 @@ function Upload() {
                             onClick={handleProcess}
                         >
                             <IconUpload />
-                            {running ? 'Processingâ€¦' : 'Process'}
+                            {running ? 'Processing' : 'Process'}
                         </button>
                     )}
 

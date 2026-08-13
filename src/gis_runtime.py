@@ -16,8 +16,13 @@ Three jobs:
               globals as attribute lookups at call time, so this works with
               zero edits to the scripts, and the CLI (which never enters the
               context) behaves byte-identically.
-  * guard   — header-only budget checks that reject an input before anything
-              allocates, plus the R2 helpers the worker needs.
+  * guard   — budget checks before a processor runs. The raster guard
+              downsamples an oversized GeoTIFF in place, streaming a decimated
+              read/write so it never materializes the full-resolution array.
+              The LiDAR guard has no equivalent cheap fix (shrinking the grid
+              means re-choosing `cell`, which is a job parameter, not
+              something safe to silently override) so it still rejects
+              outright. Plus the R2 helpers the worker needs.
 
 IMPORTANT: the GDAL/PROJ environment below must be set before anything imports
 rasterio or pyogrio. GDAL_CACHEMAX in particular is read once at GDAL init and
@@ -309,12 +314,9 @@ def tail_log(buffer: io.StringIO, limit: int = 8192) -> str:
 # ---------------------------------------------------------------------------
 # Preflight budget guards
 # ---------------------------------------------------------------------------
-# The input file is never the dominant allocation; the intermediate arrays are.
-# Both checks below read only a header, so they cost microseconds and run before
-# anything is allocated.
 def check_raster_budget(src: Path, max_pixels: int, display_name: str | None = None) -> dict[str, Any]:
     """
-    Reject a GeoTIFF whose pixel count would blow the memory budget.
+    Ensure a GeoTIFF fits the memory budget, downsampling it in place if not.
 
     `display_name` is the filename the user uploaded: the local file is named
     deterministically by the worker, and naming that in an error is confusing.
@@ -322,6 +324,14 @@ def check_raster_budget(src: Path, max_pixels: int, display_name: str | None = N
     gis_common.render_dem_overlay does a full src.read(1), float64 casts in
     band_stats and colorize_to_rgba, and an H×W×4 RGBA array — a peak of roughly
     33 bytes per pixel. 16M pixels is therefore about 530 MB.
+
+    Rather than reject an oversized file and tell the user to run
+    gdal_translate themselves, this resamples `src` down to fit `max_pixels`
+    and overwrites it at the same path, so callers can proceed unchanged.
+    The resample is a single decimated RasterIO call (rasterio's `out_shape`),
+    which streams from disk in blocks — it allocates an array sized to the
+    *output* dimensions, not the source, so it stays cheap even when the
+    source itself would have blown the budget if read at full resolution.
     """
     import rasterio
 
@@ -345,21 +355,73 @@ def check_raster_budget(src: Path, max_pixels: int, display_name: str | None = N
         )
 
     pixels = width * height
+    resized = False
     if pixels > max_pixels:
-        raise GisInputError(
-            "raster_too_large",
-            f"{name} is {width}x{height} = {pixels:,} pixels, over the {max_pixels:,} "
-            f"pixel budget. Downsample it first, e.g. "
-            f"gdal_translate -outsize {_shrink_percent(pixels, max_pixels)}% "
-            f"{_shrink_percent(pixels, max_pixels)}% in.tif out.tif",
+        # 0.95 margin so integer rounding of width/height can't land back
+        # over budget by a pixel or two.
+        scale = math.sqrt(max_pixels / pixels) * 0.95
+        out_width = max(1, int(width * scale))
+        out_height = max(1, int(height * scale))
+        logger.info(
+            "%s is %dx%d = %d pixels, over the %d pixel budget; downsampling to %dx%d",
+            name, width, height, pixels, max_pixels, out_width, out_height,
         )
-    return {"width": width, "height": height, "band_count": count, "src_crs": str(crs)}
+        _downsample_raster_inplace(src, out_width, out_height)
+        width, height = out_width, out_height
+        pixels = width * height
+        resized = True
+
+    return {
+        "width": width,
+        "height": height,
+        "band_count": count,
+        "src_crs": str(crs),
+        "resized": resized,
+    }
 
 
-def _shrink_percent(pixels: int, max_pixels: int) -> int:
-    """A suggested --outsize percentage that lands under the budget."""
-    ratio = math.sqrt(max_pixels / pixels)
-    return max(1, int(ratio * 100 * 0.95))
+def _downsample_raster_inplace(src: Path, out_width: int, out_height: int) -> None:
+    """
+    Resample `src` to `out_width`x`out_height` and overwrite it in place.
+
+    Written to a sibling temp file first and swapped in with os.replace(), so
+    a crash mid-resample can never leave a truncated GeoTIFF where the rest
+    of the pipeline expects a valid one.
+    """
+    import rasterio
+    from rasterio.enums import Resampling
+
+    tmp_dst = src.with_name(src.name + ".resized.tmp")
+    try:
+        with rasterio.open(src) as ds:
+            profile = ds.profile.copy()
+            transform = ds.transform * ds.transform.scale(
+                ds.width / out_width, ds.height / out_height
+            )
+            profile.update(width=out_width, height=out_height, transform=transform)
+            # Drop any tiling from the source profile: its blockxsize/
+            # blockysize was chosen for the original dimensions and can
+            # easily exceed the shrunk ones, which GDAL rejects outright.
+            profile.pop("blockxsize", None)
+            profile.pop("blockysize", None)
+            profile["tiled"] = False
+            if ds.nodata is not None:
+                profile["nodata"] = ds.nodata
+
+            # Average is the right default for DEMs and other continuous
+            # rasters: unlike nearest or cubic it doesn't invent new extremes,
+            # which matters for a heightfield.
+            data = ds.read(
+                out_shape=(ds.count, out_height, out_width),
+                resampling=Resampling.average,
+            )
+
+            with rasterio.open(tmp_dst, "w", **profile) as dst:
+                dst.write(data)
+
+        os.replace(tmp_dst, src)
+    finally:
+        tmp_dst.unlink(missing_ok=True)
 
 
 def check_lidar_budget(
@@ -372,6 +434,12 @@ def check_lidar_budget(
     from the header bounds and the cell size — before a single point is read.
     The existing chunk_iterator bounds *point* memory but does nothing about the
     grid, so a county tile at cell=0.5 is trivially tens of gigabytes.
+
+    Unlike the raster guard above, this still rejects rather than silently
+    fixing things up: the grid resolution is `cell`, a parameter the job
+    explicitly chose, and coarsening it without telling anyone would change
+    the output's meaning, not just its size. The header read stays cheap
+    either way — it costs microseconds and runs before anything is allocated.
     """
     import laspy
 

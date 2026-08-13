@@ -149,6 +149,18 @@ export const VOLUME_RAMP_LIGHT_BG_WALL = ['#1c5cab', '#104281', '#0d366b', '#0a2
 /** For dark surfaces — the 3D viewer stage and the dark basemap. Surface #07111f. */
 export const VOLUME_RAMP_DARK_BG = ['#9ecbff', '#5ea5f2', '#3f7fd4', '#2a5da8']
 
+/**
+ * Wall tones for the map's 2.5D fake — each roof above at 55% luminance.
+ *
+ * 55%, not the 68% that reads as natural shading: at 68% the darkest roof and
+ * its wall sit 1.61:1 apart, which on a 220px map is not a fold, it is noise.
+ * This gives 1.94:1. The darkest wall is then only 1.50:1 against the basemap —
+ * dim on purpose, it is the shaded face — so the wall path also takes a
+ * 1px stroke in its own roof colour, and that stroke is what keeps the
+ * silhouette readable rather than the fill.
+ */
+export const VOLUME_RAMP_DARK_BG_WALL = ['#57708c', '#345b85', '#234675', '#17335c']
+
 export const VOLUME_CLASS_LABELS = ['smallest 25%', '25–50%', '50–75%', 'largest 25%']
 
 /**

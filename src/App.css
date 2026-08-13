@@ -856,6 +856,36 @@
 .map-key-dot--splat { background: var(--gv-splat-point); }
 .map-key-dot--empty { background: var(--gv-empty-point); }
 
+/* Volume ramp under the map. The four steps sit flush as one continuous bar —
+   they are an ordered scale, not four categories, and gaps would say otherwise. */
+.map-key--volume {
+  gap: 4px 8px;
+  align-items: center;
+}
+
+.map-key--volume .map-key-item + .map-key-item {
+  margin-left: -8px;
+}
+
+/* The no-data swatch is the one item that is not part of the scale, so it gets
+   its gap back and a label. */
+.map-key--volume .map-key-item:last-child {
+  margin-left: 6px;
+  gap: 6px;
+}
+
+.map-key-label {
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.map-key-swatch {
+  width: 16px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
 /* An area, not a point — square and mostly hollow, so the key reads the way
    the map does: outline carries the meaning, the fill only says "inside". */
 .map-key-dot--area {

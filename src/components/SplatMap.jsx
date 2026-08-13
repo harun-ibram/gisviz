@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import L from 'leaflet'
 import { CircleMarker, MapContainer, Polygon, TileLayer, Tooltip, useMap } from 'react-leaflet'
@@ -6,7 +6,16 @@ import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { collectCoordinatePairs } from './libraryUtils.jsx'
 import { BASEMAPS, DEFAULT_CENTER, DEFAULT_ZOOM } from '../gis/basemaps.js'
 import { outerRings } from '../gis/buildings.js'
-import { EMPTY_POINT, POINT_RING, ringToLatLngs, SPLAT_POINT } from '../gis/gisGeo.js'
+import {
+  EMPTY_POINT,
+  NO_DATA_COLOUR,
+  POINT_RING,
+  ringToLatLngs,
+  SPLAT_POINT,
+  VOLUME_CLASS_LABELS,
+  VOLUME_RAMP_DARK_BG,
+} from '../gis/gisGeo.js'
+import MapBuildings from './MapBuildings.jsx'
 
 /**
  * The viewer's location map: every node and region on a real basemap, with the
@@ -84,9 +93,13 @@ function FitToFeatures({ features }) {
 }
 
 function SplatMap({ className = '' }) {
-  const { allNodes, allRegions, loading, error } = useSplatLibrary()
+  const { allNodes, allRegions, loading, error, apiBaseUrl } = useSplatLibrary()
   const navigate = useNavigate()
   const [basemapId, setBasemapId] = useState('dark')
+  const [buildings, setBuildings] = useState(null)
+
+  // Stable, or the building layer's fetch effect re-runs on every parent render.
+  const handleBuildings = useCallback((status) => setBuildings(status), [])
 
   const features = useMemo(() => [
     ...(allNodes ?? []).map((node) => toMapFeature('node', node)),
@@ -102,6 +115,18 @@ function SplatMap({ className = '' }) {
   const basemap = BASEMAPS[basemapId] ?? BASEMAPS.dark
   const withSplat = features.filter((feature) => feature.modelPath).length
   const withOutline = features.filter((feature) => feature.rings.length > 0).length
+
+  // Buildings are fetched for the viewport, not the library, so their state is
+  // reported separately — "nothing here" and "you are too far out" are
+  // different answers and only one of them is worth acting on.
+  const buildingNote = (() => {
+    if (!buildings) return null
+    if (buildings.kind === 'zoom') return 'zoom in for building heights'
+    if (buildings.kind === 'error') return `buildings unavailable — ${buildings.message}`
+    if (buildings.shown === 0) return 'no buildings measured here'
+    const clipped = buildings.total > buildings.shown ? ` of ${buildings.total}` : ''
+    return `${buildings.measured}/${buildings.shown}${clipped} buildings with a LiDAR height`
+  })()
 
   const open = (feature) => {
     if (!feature.modelPath) return
@@ -127,6 +152,10 @@ function SplatMap({ className = '' }) {
           />
 
           <FitToFeatures features={features} />
+
+          {/* Buildings first of all: they are the ground layer, and both the
+              drawn outline and the dots have to stay readable on top. */}
+          <MapBuildings apiBaseUrl={apiBaseUrl} onStatus={handleBuildings} />
 
           {/* Outlines before markers, deliberately. Both are SVG paths in the
               same overlay pane, where paint order is DOM order — so mounting
@@ -212,6 +241,31 @@ function SplatMap({ className = '' }) {
           ) : null}
         </div>
 
+        {buildings?.kind === 'ok' && buildings.shown > 0 ? (
+          <div className="map-key map-key--volume">
+            <span className="map-key-label">volume</span>
+            {VOLUME_CLASS_LABELS.map((label, index) => (
+              // Swatch only, no caption: four labels would wrap this strip onto
+              // three lines under a sidebar map. The title carries the class.
+              <span key={label} className="map-key-item" title={label} aria-label={label}>
+                <i
+                  className="map-key-swatch"
+                  style={{ background: VOLUME_RAMP_DARK_BG[index] }}
+                  aria-hidden="true"
+                />
+              </span>
+            ))}
+            <span className="map-key-item">
+              <i
+                className="map-key-swatch"
+                style={{ background: NO_DATA_COLOUR, opacity: 0.5 }}
+                aria-hidden="true"
+              />
+              no LiDAR
+            </span>
+          </div>
+        ) : null}
+
         {/* Same label-wrapping-radio markup the GIS page uses, so it picks up
             the existing .seg styling rather than needing its own. */}
         <div className="seg" role="radiogroup" aria-label="Basemap">
@@ -241,6 +295,7 @@ function SplatMap({ className = '' }) {
               // this is what distinguishes "the map is broken" from "these
               // targets predate drawn outlines".
               : `${withSplat} of ${features.length} with a splat · ${withOutline} outlined`}
+        {buildingNote ? <><br />{buildingNote}</> : null}
       </p>
     </div>
   )

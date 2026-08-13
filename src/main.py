@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func, text
@@ -279,8 +279,36 @@ class CreateNodeRequest(BaseModel):
     lon: float | None = None
 
 
+def _measure_drawn_later(background: BackgroundTasks, polygon: list[list[float]]) -> None:
+    """
+    Measure a freshly drawn outline against LiDAR already in the library.
+
+    Backgrounded, unlike the /gis/measure-drawn backfill: somebody drawing an
+    outline should not wait on an R2 download and a raster pass to find out
+    their node was created. Best effort — a failure here leaves the target
+    intact and unmeasured, which is the same state it had a second earlier.
+    """
+    lons = [point[0] for point in polygon]
+    lats = [point[1] for point in polygon]
+    bounds = [min(lons), min(lats), max(lons), max(lats)]
+
+    def run() -> None:
+        try:
+            # Imported inside the task so a broken native GIS stack cannot stop
+            # nodes from being created.
+            from gis_worker import measure_drawn_targets
+
+            measure_drawn_targets(bounds)
+        except Exception:
+            logger.warning("drawn measurement failed for %s", bounds, exc_info=True)
+
+    background.add_task(run)
+
+
 @app.post("/nodes", dependencies=[RequireUser])
-async def create_node(body: CreateNodeRequest, session: SessionDep):
+async def create_node(
+    body: CreateNodeRequest, session: SessionDep, background: BackgroundTasks
+):
     """Create a node to attach a splat to later, from a drawn outline or a point."""
     tags = json.dumps({"name": body.name})
 
@@ -323,6 +351,8 @@ async def create_node(body: CreateNodeRequest, session: SessionDep):
     node_id = _insert_with_id_retry(session, sql, params)
     if node_id is None:
         raise HTTPException(status_code=400, detail=_BAD_OUTLINE)
+    if body.polygon is not None:
+        _measure_drawn_later(background, body.polygon)
     return {"node_id": node_id}
 
 
@@ -358,7 +388,9 @@ class CreateRegionRequest(BaseModel):
 
 
 @app.post("/regions", dependencies=[RequireUser])
-async def create_region(body: CreateRegionRequest, session: SessionDep):
+async def create_region(
+    body: CreateRegionRequest, session: SessionDep, background: BackgroundTasks
+):
     """Create a region, with a drawn boundary when one was supplied."""
     region_id = str(uuid.uuid4())
 
@@ -408,6 +440,11 @@ async def create_region(body: CreateRegionRequest, session: SessionDep):
         raise HTTPException(
             status_code=400, detail=f"Could not create region: {exc.orig}"
         ) from exc
+
+    # After the commit, not before: the measurement reads the row back out of
+    # the database, so scheduling it against an uncommitted insert would find
+    # nothing to measure.
+    _measure_drawn_later(background, body.polygon)
     return {"id": region_id, "name": body.name}
 
 

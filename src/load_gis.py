@@ -271,10 +271,18 @@ def upsert_buildings(
         except (TypeError, ValueError):
             osm_id = None
 
+        # An explicit id wins over the derived one. Drawn target outlines need
+        # this: a region's own id is TEXT, so it cannot ride in osm_id (BIGINT),
+        # and the positional fallback below would give it a different row every
+        # time the set of drawn outlines changes — re-measuring would duplicate
+        # rather than update.
+        row_id = props.get("building_id")
         measured = {field: _clean_number(props.get(field)) for field in _MEASURED_FIELDS}
         rows.append(
             {
-                "id": f"{prefix}:{osm_id}" if osm_id is not None else f"{prefix}:#{index}",
+                "id": row_id or (
+                    f"{prefix}:{osm_id}" if osm_id is not None else f"{prefix}:#{index}"
+                ),
                 "layer_id": layer_id,
                 "lidar_layer_id": lidar_layer_id,
                 "osm_id": osm_id,

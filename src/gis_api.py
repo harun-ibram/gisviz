@@ -760,6 +760,40 @@ async def list_buildings(
     }
 
 
+@router.post("/measure-drawn", dependencies=[Protected])
+async def measure_drawn(bbox: str | None = None) -> dict[str, Any]:
+    """
+    Measure user-drawn target outlines against LiDAR that is already indexed.
+
+    Normally this happens on its own — when a LiDAR job lands, and when an
+    outline is drawn. This endpoint is the third case: outlines that predate
+    either trigger, which no future job will ever come back for.
+
+    Synchronous, not a background job. It is a backfill you run by hand and the
+    only thing you want from it is the count, which a fire-and-forget task
+    cannot give you. A single tile's surfaces are tens of megabytes and a
+    handful of footprints measure in seconds; a whole-country backfill over
+    many tiles is the case that could outlast a proxy timeout, so pass a bbox.
+    """
+    # Imported here, not at module scope: gis_worker pulls in the native GIS
+    # stack, and the API must still boot when that is the thing that is broken.
+    from gis_worker import classify, measure_drawn_targets
+
+    bounds = None
+    if bbox:
+        parsed = _parse_bbox(bbox)
+        bounds = [
+            parsed["min_lon"], parsed["min_lat"], parsed["max_lon"], parsed["max_lat"]
+        ]
+
+    try:
+        return measure_drawn_targets(bounds)
+    except Exception as exc:
+        code, message = classify(exc)
+        logger.warning("measure-drawn failed (%s)", code, exc_info=True)
+        raise HTTPException(status_code=500, detail=message) from exc
+
+
 @router.get("/layers/{layer_id}")
 async def get_gis_layer(layer_id: str, session: SessionDep) -> dict[str, Any]:
     layers = _fetch_layers(session, ["l.id = :layer_id"], {"layer_id": layer_id})

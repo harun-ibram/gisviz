@@ -298,6 +298,257 @@ def _find_overlapping_lidar(bounds: list[float] | None) -> tuple[str, str, str] 
     return (row[0], row[1], row[2]) if row else None
 
 
+# ---------------------------------------------------------------------------
+# Drawn target outlines
+# ---------------------------------------------------------------------------
+# An outline the user drew around a splat target is a footprint like any other,
+# so it goes through the same measurement and lands in the same table. That is
+# what lets a splat over an unmapped building carry a height: OSM never has to
+# have heard of the building, only the LiDAR has to cover it.
+
+_DRAWN_LAYER_ID = "drawn"
+
+# The API caps a drawn polygon at 5000 km2 — a bound meant for naming a region,
+# not for something about to be rasterised at one metre. Past this it is not a
+# building and measuring it would mean gridding a county.
+_MAX_DRAWN_AREA_M2 = 2_000_000
+
+_DRAWN_SELECT = """
+    SELECT 'drawn:node:' || n.node_id                          AS building_id,
+           n.node_id                                           AS osm_id,
+           COALESCE(n.tags ->> 'name', 'Node ' || n.node_id)   AS name,
+           ST_AsGeoJSON(n.footprint)                           AS geom
+    FROM osm.nodes n
+    WHERE n.footprint IS NOT NULL
+      AND ST_Area(n.footprint::geography) <= :max_area{node_bbox}
+    UNION ALL
+    SELECT 'drawn:region:' || r.id,
+           NULL,
+           COALESCE(r.name, 'Region ' || r.id),
+           ST_AsGeoJSON(r.geom)
+    FROM public.regions r
+    WHERE r.geom IS NOT NULL
+      -- Only outlines a user actually drew. Without this every administrative
+      -- region loaded from ro.json qualifies, and the area cap is the only
+      -- thing standing between us and measuring a county.
+      AND r.source = 'drawn'
+      AND ST_Area(r.geom::geography) <= :max_area{region_bbox}
+"""
+
+_BBOX_CLAUSE = (
+    "\n      AND ST_Intersects({column},"
+    " ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))"
+)
+
+
+def _drawn_footprints(bounds: list[float] | None) -> list[dict[str, Any]]:
+    """Drawn target outlines as GeoJSON features, shaped for process_buildings."""
+    params: dict[str, Any] = {"max_area": _MAX_DRAWN_AREA_M2}
+    bbox = _bbox_params(bounds)
+    if bbox:
+        params.update(bbox)
+
+    sql = _DRAWN_SELECT.format(
+        node_bbox=_BBOX_CLAUSE.format(column="n.footprint") if bbox else "",
+        region_bbox=_BBOX_CLAUSE.format(column="r.geom") if bbox else "",
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+
+    return [
+        {
+            "type": "Feature",
+            "geometry": json.loads(row["geom"]),
+            "properties": {
+                # Explicit, because a region's id is TEXT and cannot ride in
+                # osm_id — see the note in load_gis.upsert_buildings.
+                "building_id": row["building_id"],
+                "osm_id": row["osm_id"],
+                "name": row["name"],
+                "source": "drawn",
+            },
+        }
+        for row in rows
+        if row["geom"]
+    ]
+
+
+def _geometry_bounds(geometry: dict[str, Any] | None) -> list[float] | None:
+    """[min_lon, min_lat, max_lon, max_lat] of any GeoJSON geometry."""
+    lons: list[float] = []
+    lats: list[float] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, (list, tuple)):
+            if len(node) >= 2 and all(isinstance(value, (int, float)) for value in node[:2]):
+                lons.append(float(node[0]))
+                lats.append(float(node[1]))
+                return
+            for item in node:
+                walk(item)
+
+    walk((geometry or {}).get("coordinates"))
+    if not lons:
+        return None
+    return [min(lons), min(lats), max(lons), max(lats)]
+
+
+def _surfaces(layer: LayerResult) -> tuple[Path | None, Path | None]:
+    """This LiDAR layer's metric DEM and DSM, as they sit on local disk."""
+    dem = layer.artifacts.get("native_dem.tif")
+    dsm = layer.artifacts.get("native_dsm.tif")
+    # The surface the user asked for is under its generic name.
+    if layer.kind == "dem":
+        dem = dem or layer.artifacts.get("native.tif")
+    elif layer.kind == "dsm":
+        dsm = dsm or layer.artifacts.get("native.tif")
+    return dem, dsm
+
+
+def _run_measurement(
+    processors,
+    features: list[dict[str, Any]],
+    dem: Path,
+    dsm: Path,
+    work_root: Path,
+    *,
+    label: str,
+    layer_id: str,
+    lidar_layer_id: str | None,
+    job_id: str | None,
+) -> tuple[dict[str, Any], int]:
+    """Write features out, measure them against the surfaces, upsert the result."""
+    source = work_root / f"{label}_footprints.geojson"
+    source.write_text(
+        json.dumps({"type": "FeatureCollection", "features": features}), encoding="utf-8"
+    )
+    measured = work_root / f"{label}_measured.geojson"
+    summary = processors.heights.process_buildings(dsm, dem, source, measured)
+    stored = processors.loader.upsert_buildings(
+        engine, measured, layer_id=layer_id, lidar_layer_id=lidar_layer_id, job_id=job_id
+    )
+    return summary, stored
+
+
+def _measure_drawn(
+    job_id: str,
+    layer_type: str,
+    layers: list[LayerResult],
+    processors,
+    work_root: Path,
+) -> str | None:
+    """
+    Measure drawn outlines against the LiDAR this job just produced.
+
+    Kept separate from _measure_buildings rather than folded into it: that one
+    pairs two GIS *layers*, while this pairs a layer with rows a user created in
+    a different part of the app. Their failure modes are unrelated and so are
+    their log lines — collapsing them would mean one silence explaining two
+    different absences.
+    """
+    if layer_type != "lidar":
+        return None
+
+    dem, dsm = _surfaces(layers[0])
+    if not (dem and dsm):
+        return None
+
+    features = _drawn_footprints(layers[0].bounds4326)
+    if not features:
+        return "[drawn] no drawn outlines over this tile"
+
+    summary, stored = _run_measurement(
+        processors,
+        features,
+        dem,
+        dsm,
+        work_root,
+        label="drawn",
+        layer_id=_DRAWN_LAYER_ID,
+        lidar_layer_id=layers[0].layer_id,
+        job_id=job_id,
+    )
+    return (
+        f"[drawn] {summary['measured']}/{summary['buildings']} drawn outlines measured, "
+        f"{stored} written to public.buildings "
+        f"(median {summary['height_m']['median']:.1f} m)"
+    )
+
+
+def measure_drawn_targets(bounds: list[float] | None = None) -> dict[str, Any]:
+    """
+    Measure drawn outlines against LiDAR that is already indexed.
+
+    The other direction from _measure_drawn: there the tile is new and still on
+    local disk, here the outline is new and the tile has to come back from R2.
+    Both are needed, because the user can do these two things in either order.
+
+    Also the backfill. Everything drawn before any of this existed has no
+    measurement and no job will ever come along to give it one.
+    """
+    features = _drawn_footprints(bounds)
+    if not features:
+        return {"targets": 0, "measured": 0, "stored": 0, "uncovered": 0, "tiles": 0}
+
+    # Grouped by covering tile so a surface pair is fetched once even when a
+    # dozen outlines sit on it.
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    uncovered = 0
+    for feature in features:
+        match = _find_overlapping_lidar(_geometry_bounds(feature.get("geometry")))
+        if match is None:
+            uncovered += 1
+            continue
+        groups.setdefault(match, []).append(feature)
+
+    if not groups:
+        return {
+            "targets": len(features),
+            "measured": 0,
+            "stored": 0,
+            "uncovered": uncovered,
+            "tiles": 0,
+        }
+
+    processors = load_processors()
+    total_measured = 0
+    total_stored = 0
+
+    with tempfile.TemporaryDirectory(prefix="gis-drawn-") as tmp:
+        root = Path(tmp)
+        # process_buildings writes through gis_common's path globals, which have
+        # to be rebound here just as they are inside a job.
+        with gis_workspace(root):
+            for index, ((lidar_layer_id, dem_key, dsm_key), group) in enumerate(groups.items()):
+                # Numbered, not named after the layer: layer ids carry colons.
+                dem = root / f"tile{index}_dem.tif"
+                dsm = root / f"tile{index}_dsm.tif"
+                r2_download(dem_key, dem)
+                r2_download(dsm_key, dsm)
+
+                summary, stored = _run_measurement(
+                    processors,
+                    group,
+                    dem,
+                    dsm,
+                    root,
+                    label=f"drawn{index}",
+                    layer_id=_DRAWN_LAYER_ID,
+                    lidar_layer_id=lidar_layer_id,
+                    job_id=None,
+                )
+                total_measured += int(summary["measured"])
+                total_stored += stored
+
+    return {
+        "targets": len(features),
+        "measured": total_measured,
+        "stored": total_stored,
+        "uncovered": uncovered,
+        "tiles": len(groups),
+    }
+
+
 def _measure_buildings(
     job_id: str,
     layer_type: str,
@@ -315,13 +566,7 @@ def _measure_buildings(
 
     if layer_type == "lidar":
         layer = layers[0]
-        dem = layer.artifacts.get("native_dem.tif")
-        dsm = layer.artifacts.get("native_dsm.tif")
-        # The surface the user asked for is under its generic name.
-        if layer.kind == "dem":
-            dem = dem or layer.artifacts.get("native.tif")
-        elif layer.kind == "dsm":
-            dsm = dsm or layer.artifacts.get("native.tif")
+        dem, dsm = _surfaces(layer)
         raster_layer_id = layer.layer_id
 
         if not (dem and dsm):
@@ -879,14 +1124,30 @@ def _run_job_locked(job_id: str, job: dict[str, Any]) -> None:
                 # gis_common's path globals, which must stay rebound at the job
                 # directory rather than at the repo.
                 with gis_workspace(work_root):
-                    note = _measure_buildings(
-                        job_id, layer_type, layers, load_processors(), work_root
-                    )
+                    processors = load_processors()
+                    note = _measure_buildings(job_id, layer_type, layers, processors, work_root)
             except Exception:
                 logger.warning("GIS job %s: building heights failed", job_id, exc_info=True)
                 note = "[heights] failed — the layers above are unaffected"
             if note:
                 log_lines.append(note)
+
+            # Drawn outlines, in their own try: a user's hand-drawn ring can be
+            # degenerate in ways an OSM footprint never is, and that must not
+            # take the OSM measurement's result down with it.
+            drawn_note = None
+            try:
+                with gis_workspace(work_root):
+                    drawn_note = _measure_drawn(
+                        job_id, layer_type, layers, load_processors(), work_root
+                    )
+            except Exception:
+                logger.warning("GIS job %s: drawn heights failed", job_id, exc_info=True)
+                drawn_note = "[drawn] failed — the layers above are unaffected"
+            if drawn_note:
+                log_lines.append(drawn_note)
+
+            if note or drawn_note:
                 log = "\n".join(log_lines + ([captured] if captured else []))
 
         # ---- index ------------------------------------------------------

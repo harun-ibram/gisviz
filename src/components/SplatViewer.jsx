@@ -500,6 +500,14 @@ const isTypingTarget = (target) =>
           return
         }
 
+        if (event.code === 'Escape') {
+          if (rotateOpen) {
+            setRotateOpen(false)
+            event.preventDefault()
+          }
+          return
+        }
+
         if (MOVE_KEYS.has(event.code)) {
           keys.add(event.code)
           event.preventDefault()

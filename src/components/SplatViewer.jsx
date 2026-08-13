@@ -313,6 +313,16 @@ const isTypingTarget = (target) =>
     // the current angles instead of the ones captured when the effect ran.
     const rotationRef = useRef(DEFAULT_ROTATION)
 
+    const setRotateMenuOpen = (nextOpen) => {
+      rotateOpenRef.current = nextOpen
+      setRotateOpen(nextOpen)
+    }
+
+    const toggleRotateMenu = () => {
+      const nextOpen = !rotateOpenRef.current
+      setRotateMenuOpen(nextOpen)
+    }
+
     useEffect(() => {
       rotateOpenRef.current = rotateOpen
     }, [rotateOpen])
@@ -507,7 +517,7 @@ const isTypingTarget = (target) =>
 
         if (event.code === 'Escape') {
           if (rotateOpenRef.current) {
-            setRotateOpen(false)
+            setRotateMenuOpen(false)
             event.preventDefault()
           }
           return
@@ -1079,7 +1089,7 @@ const isTypingTarget = (target) =>
             type="button"
             className="btn btn-secondary"
             style={{ borderColor: rotateOpen ? 'var(--color-accent)' : 'var(--color-divider)' }}
-            onClick={() => setRotateOpen((open) => !open)}
+            onClick={toggleRotateMenu}
             title="Rotate the model on X, Y and Z"
           >
             Rotate

@@ -856,6 +856,14 @@
 .map-key-dot--splat { background: var(--gv-splat-point); }
 .map-key-dot--empty { background: var(--gv-empty-point); }
 
+/* An area, not a point — square and mostly hollow, so the key reads the way
+   the map does: outline carries the meaning, the fill only says "inside". */
+.map-key-dot--area {
+  border-radius: 2px;
+  border-color: var(--gv-splat-point);
+  background: color-mix(in srgb, var(--gv-splat-point) 16%, transparent);
+}
+
 /* Counts and totals under the minimap. Sits outside the SVG so it stays
    legible at any viewport size instead of scaling with the viewBox. */
 .map-caption {

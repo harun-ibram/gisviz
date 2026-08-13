@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import L from 'leaflet'
-import { CircleMarker, MapContainer, TileLayer, Tooltip, useMap } from 'react-leaflet'
+import { CircleMarker, MapContainer, Polygon, TileLayer, Tooltip, useMap } from 'react-leaflet'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { collectCoordinatePairs } from './libraryUtils.jsx'
 import { BASEMAPS, DEFAULT_CENTER, DEFAULT_ZOOM } from '../gis/basemaps.js'
-import { EMPTY_POINT, POINT_RING, SPLAT_POINT } from '../gis/gisGeo.js'
+import { outerRings } from '../gis/buildings.js'
+import { EMPTY_POINT, POINT_RING, ringToLatLngs, SPLAT_POINT } from '../gis/gisGeo.js'
 
 /**
  * The viewer's location map: every node and region on a real basemap, with the
@@ -13,7 +14,11 @@ import { EMPTY_POINT, POINT_RING, SPLAT_POINT } from '../gis/gisGeo.js'
  *
  * Replaces the hand-rolled SVG minimap, which drew features on a blank
  * parchment square — accurate, but with nothing to locate them against.
- * Heights from LiDAR are the intended next step; points come first.
+ *
+ * Targets drawn as polygons show their outline as well as their point. Both,
+ * not either: at the zoom that fits a whole library, a 40 m footprint is
+ * sub-pixel, so the dot stays the thing you can find and click. The outline is
+ * what makes the extent legible once you are zoomed into one.
  */
 
 // Orange for "has a splat you can open", neutral for "nothing generated yet".
@@ -22,11 +27,14 @@ import { EMPTY_POINT, POINT_RING, SPLAT_POINT } from '../gis/gisGeo.js'
 // Shared with the coordinate picker and mirrored as CSS variables — see gisGeo.
 
 /**
- * One point per node/region.
+ * One point — and, where one was drawn, one outline — per node/region.
  *
- * Nodes carry a GeoJSON Point; regions a MultiPolygon, or null when one was
- * created by name before a boundary was drawn. Both collapse to a single
- * lon/lat, and a region with no geometry has nowhere to sit, so it is skipped.
+ * The two kinds keep their outline in different columns, because `osm.nodes.geom`
+ * is `Point NOT NULL` and cannot be widened: `osm.build_way_geometry()` builds
+ * ways out of it with ST_MakeLine. So a node's outline lives in `footprint` and
+ * its point in `geom`, while a region carries its outline in `geom` itself and
+ * has no separate point. A region created by name before a boundary was drawn
+ * has neither, so it is skipped — there is nowhere to put it.
  */
 const toMapFeature = (kind, raw) => {
   const pairs = collectCoordinatePairs(raw?.geom?.coordinates)
@@ -43,6 +51,9 @@ const toMapFeature = (kind, raw) => {
     name: kind === 'node' ? (raw.tags?.name ?? `Node ${raw.node_id}`) : (raw.name ?? 'Region'),
     lon: lonSum / pairs.length,
     lat: latSum / pairs.length,
+    // Empty for anything created before outlines existed, which is the whole
+    // back catalogue — those keep rendering as a bare point.
+    rings: outerRings(kind === 'node' ? raw?.footprint : raw?.geom),
     modelPath: raw.model_path ?? null,
   }
 }
@@ -59,7 +70,12 @@ function FitToFeatures({ features }) {
 
   useEffect(() => {
     if (features.length === 0) return
-    const bounds = L.latLngBounds(features.map((feature) => [feature.lat, feature.lon]))
+    // Corners as well as centres: fitting to centres alone leaves half of a
+    // large drawn area outside the initial view.
+    const bounds = L.latLngBounds(features.flatMap((feature) => [
+      [feature.lat, feature.lon],
+      ...feature.rings.flatMap(ringToLatLngs),
+    ]))
     // maxZoom stops a single point from slamming to street level.
     map.fitBounds(bounds, { padding: [28, 28], maxZoom: 16 })
   }, [features, map])
@@ -85,6 +101,7 @@ function SplatMap({ className = '' }) {
 
   const basemap = BASEMAPS[basemapId] ?? BASEMAPS.dark
   const withSplat = features.filter((feature) => feature.modelPath).length
+  const withOutline = features.filter((feature) => feature.rings.length > 0).length
 
   const open = (feature) => {
     if (!feature.modelPath) return
@@ -110,6 +127,31 @@ function SplatMap({ className = '' }) {
           />
 
           <FitToFeatures features={features} />
+
+          {/* Outlines before markers, deliberately. Both are SVG paths in the
+              same overlay pane, where paint order is DOM order — so mounting
+              these first keeps every dot clickable on top of its own outline
+              instead of buried under a fill that also wants the click. */}
+          {ordered.flatMap((feature) => {
+            const openable = Boolean(feature.modelPath)
+            const colour = openable ? SPLAT_POINT : EMPTY_POINT
+            return feature.rings.map((ring, index) => (
+              <Polygon
+                key={`${feature.key}-outline-${index}`}
+                positions={ringToLatLngs(ring)}
+                className={openable ? 'gv-splat-point--open' : 'gv-splat-point'}
+                pathOptions={{
+                  color: colour,
+                  weight: 2,
+                  // Low enough to read the basemap through — the outline is
+                  // the signal, the fill only says which side is inside.
+                  fillColor: colour,
+                  fillOpacity: 0.16,
+                }}
+                eventHandlers={{ click: () => open(feature) }}
+              />
+            ))
+          })}
 
           {ordered.map((feature) => {
             const openable = Boolean(feature.modelPath)
@@ -137,6 +179,12 @@ function SplatMap({ className = '' }) {
                   {feature.kind === 'node' ? 'Node' : 'Region'}
                   {' · '}
                   {feature.lat.toFixed(5)}, {feature.lon.toFixed(5)}
+                  {feature.rings.length > 0 ? (
+                    <>
+                      {' · '}
+                      {feature.rings.reduce((total, ring) => total + ring.length, 0)} corners
+                    </>
+                  ) : null}
                   <br />
                   {openable ? 'Click to open this splat' : 'No splat generated yet'}
                 </Tooltip>
@@ -156,6 +204,12 @@ function SplatMap({ className = '' }) {
             <i className="map-key-dot map-key-dot--empty" aria-hidden="true" />
             no splat yet
           </span>
+          {withOutline > 0 ? (
+            <span className="map-key-item">
+              <i className="map-key-dot map-key-dot--area" aria-hidden="true" />
+              drawn area
+            </span>
+          ) : null}
         </div>
 
         {/* Same label-wrapping-radio markup the GIS page uses, so it picks up
@@ -183,7 +237,10 @@ function SplatMap({ className = '' }) {
             ? 'Loading map…'
             : features.length === 0
               ? 'Nothing on the map yet — add a node or a region first.'
-              : `${withSplat} of ${features.length} with a splat`}
+              // The outline count is here on purpose: when nothing is outlined,
+              // this is what distinguishes "the map is broken" from "these
+              // targets predate drawn outlines".
+              : `${withSplat} of ${features.length} with a splat · ${withOutline} outlined`}
       </p>
     </div>
   )

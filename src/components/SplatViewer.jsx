@@ -307,10 +307,15 @@ const isTypingTarget = (target) =>
     const [zoom, setZoom] = useState(1)
     const [mapOpen, setMapOpen] = useState(true)
     const [rotateOpen, setRotateOpen] = useState(false)
+    const rotateOpenRef = useRef(false)
     const [rotation, setRotation] = useState(DEFAULT_ROTATION)
     // Mirrored so the splat, which finishes loading asynchronously, can adopt
     // the current angles instead of the ones captured when the effect ran.
     const rotationRef = useRef(DEFAULT_ROTATION)
+
+    useEffect(() => {
+      rotateOpenRef.current = rotateOpen
+    }, [rotateOpen])
     const routeSplatName = location.state?.name ?? getFileName(location.state?.modelPath)
     const selectedSplatName = selectedFile?.name ?? remoteSource?.name ?? routeSplatName
     const viewerTitle = selectedSplatName ?? 'No splat loaded'
@@ -501,7 +506,7 @@ const isTypingTarget = (target) =>
         }
 
         if (event.code === 'Escape') {
-          if (rotateOpen) {
+          if (rotateOpenRef.current) {
             setRotateOpen(false)
             event.preventDefault()
           }

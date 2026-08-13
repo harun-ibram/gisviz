@@ -886,6 +886,12 @@
   flex-shrink: 0;
 }
 
+/* The white rim the map draws around a splat's own building, so the key is
+   recognisable as the same mark rather than just the same hue. */
+.map-key-swatch--splat {
+  box-shadow: inset 0 0 0 1.5px #ffffff;
+}
+
 /* An area, not a point — square and mostly hollow, so the key reads the way
    the map does: outline carries the meaning, the fill only says "inside". */
 .map-key-dot--area {

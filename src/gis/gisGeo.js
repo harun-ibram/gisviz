@@ -177,6 +177,18 @@ export const SPLAT_POINT = '#eb6834'
 export const EMPTY_POINT = '#b3a68f'
 export const POINT_RING = '#111722'
 
+/**
+ * Wall tones for the map's 2.5D fake, matching VOLUME_RAMP_DARK_BG_WALL's
+ * treatment: the surface colour at 55% luminance.
+ *
+ * A splat's own building is drawn in the marker colour rather than its volume
+ * class. That is a deliberate loss of information — you can no longer read its
+ * size off the map — in exchange for the one question actually being asked of
+ * this map, which is "which of these is mine".
+ */
+export const SPLAT_POINT_WALL = '#81391d'
+export const EMPTY_POINT_WALL = '#625b4e'
+
 export function isRasterLayer(layer) {
     return layer?.geometry_class === 'raster'
 }

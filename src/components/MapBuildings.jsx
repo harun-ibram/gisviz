@@ -4,14 +4,19 @@ import {
   formatMetres,
   formatVolume,
   outerRings,
+  ringContains,
   volumeBreaks,
   volumeClass,
   volumeOf,
 } from '../gis/buildings.js'
 import {
+  EMPTY_POINT,
+  EMPTY_POINT_WALL,
   mapBoundsToApiBbox,
   NO_DATA_COLOUR,
   NO_DATA_WALL,
+  SPLAT_POINT,
+  SPLAT_POINT_WALL,
   VOLUME_RAMP_DARK_BG,
   VOLUME_RAMP_DARK_BG_WALL,
 } from '../gis/gisGeo.js'
@@ -89,7 +94,7 @@ const facesViewer = (from, to, clockwise) => (clockwise ? to.x < from.x : to.x >
  * zero-height extrusion would say "this building is 0 m tall", which is a
  * different claim from "we did not measure it".
  */
-function toBody(feature, ring, key, map, zoom, breaks) {
+function toBody(feature, ring, key, map, zoom, breaks, targets) {
   if (!Array.isArray(ring) || ring.length < 3) return null
 
   const base = ring.map(([lon, lat]) => map.project([lat, lon], zoom))
@@ -101,10 +106,26 @@ function toBody(feature, ring, key, map, zoom, breaks) {
   const cls = volumeClass(volumeOf(properties), breaks)
 
   const north = Math.max(...ring.map(([, lat]) => lat))
+  const centreLon = ring.reduce((total, [lon]) => total + lon, 0) / ring.length
   const centreLat = ring.reduce((total, [, lat]) => total + lat, 0) / ring.length
+
+  // Whose splat is this building the subject of, if any?
+  //
+  // The vertex mean, not a true centroid: on an L-shaped footprint the mean can
+  // fall outside the building itself, but a user's drawn outline is always the
+  // larger shape, so it still lands inside the thing we are testing against.
+  const target = targets.find((entry) =>
+    entry.rings.some((outline) => ringContains(outline, centreLon, centreLat)))
 
   const unproject = (points) => points.map((point) => map.unproject(point, zoom))
   const basePositions = unproject(base)
+
+  let roofColour = cls === null ? NO_DATA_COLOUR : VOLUME_RAMP_DARK_BG[cls]
+  let wallColour = cls === null ? NO_DATA_WALL : VOLUME_RAMP_DARK_BG_WALL[cls]
+  if (target) {
+    roofColour = target.openable ? SPLAT_POINT : EMPTY_POINT
+    wallColour = target.openable ? SPLAT_POINT_WALL : EMPTY_POINT_WALL
+  }
 
   const body = {
     key,
@@ -113,8 +134,9 @@ function toBody(feature, ring, key, map, zoom, breaks) {
     height,
     volume: volumeOf(properties),
     coverage: properties.coverage ?? null,
-    roofColour: cls === null ? NO_DATA_COLOUR : VOLUME_RAMP_DARK_BG[cls],
-    wallColour: cls === null ? NO_DATA_WALL : VOLUME_RAMP_DARK_BG_WALL[cls],
+    target: target ?? null,
+    roofColour,
+    wallColour,
     measured: typeof height === 'number' && height > 0,
     roof: basePositions,
     walls: [],
@@ -140,11 +162,14 @@ function toBody(feature, ring, key, map, zoom, breaks) {
   return body
 }
 
-function MapBuildings({ apiBaseUrl, onStatus }) {
+function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
   const map = useMap()
   const [zoom, setZoom] = useState(() => map.getZoom())
   const [bbox, setBbox] = useState(() => mapBoundsToApiBbox(map.getBounds()))
-  const [features, setFeatures] = useState([])
+  // Kept together with the bbox they were fetched for, so a pan can keep
+  // drawing the old buildings while the new ones are in flight without also
+  // reporting their stale count in the caption.
+  const [loaded, setLoaded] = useState({ key: null, features: [], total: 0 })
   const timerRef = useRef(null)
 
   // Zoom is taken immediately but the bbox is debounced: geometry is projected
@@ -192,22 +217,18 @@ function MapBuildings({ apiBaseUrl, onStatus }) {
       })
       .then((data) => {
         const found = data.features ?? []
-        setFeatures(found)
-        onStatus({
-          kind: 'ok',
-          shown: found.length,
-          total: data.total ?? found.length,
-          measured: found.filter((f) => typeof f.properties?.height_m === 'number').length,
-        })
+        setLoaded({ key: bboxKey, features: found, total: data.total ?? found.length })
       })
       .catch((cause) => {
         if (cause.name === 'AbortError') return
-        setFeatures([])
+        setLoaded({ key: bboxKey, features: [], total: 0 })
         onStatus({ kind: 'error', message: cause.message })
       })
 
     return () => controller.abort()
   }, [active, apiBaseUrl, bboxKey, zoom, onStatus])
+
+  const features = loaded.features
 
   const bodies = useMemo(() => {
     if (!active || features.length === 0) return []
@@ -221,7 +242,7 @@ function MapBuildings({ apiBaseUrl, onStatus }) {
     const built = []
     for (const feature of features) {
       outerRings(feature.geometry).forEach((ring, index) => {
-        const body = toBody(feature, ring, `${feature.id}-${index}`, map, zoom, breaks)
+        const body = toBody(feature, ring, `${feature.id}-${index}`, map, zoom, breaks, targets)
         if (body) built.push(body)
       })
     }
@@ -231,7 +252,23 @@ function MapBuildings({ apiBaseUrl, onStatus }) {
     // a near building's roof ends up under a far building's walls.
     built.sort((a, b) => b.north - a.north)
     return built
-  }, [active, features, map, zoom])
+  }, [active, features, map, targets, zoom])
+
+  // Reported from `bodies`, not from the fetch, because the splat match only
+  // exists once the geometry has been built. Gated on the loaded bbox matching
+  // the current one, or a pan would flash "no buildings measured here" between
+  // firing the request and getting it back.
+  const fresh = active && loaded.key === bboxKey
+  useEffect(() => {
+    if (!fresh) return
+    onStatus({
+      kind: 'ok',
+      shown: bodies.length,
+      total: loaded.total,
+      measured: bodies.filter((body) => body.measured).length,
+      splats: bodies.filter((body) => body.target).length,
+    })
+  }, [bodies, fresh, loaded.total, onStatus])
 
   return bodies.map((body) => (
     <Fragment key={body.key}>
@@ -256,20 +293,31 @@ function MapBuildings({ apiBaseUrl, onStatus }) {
 
       <Polygon
         positions={body.roof}
+        className={body.target?.openable ? 'gv-splat-point--open' : undefined}
         pathOptions={{
           fillColor: body.roofColour,
           // Opaque where measured, so it covers the back walls beneath it.
           fillOpacity: body.measured ? 1 : 0.4,
-          color: body.roofColour,
-          weight: 1,
+          // A splat's building takes a light rim: it is the one thing on this
+          // map you can act on, and orange-on-blue alone does not survive a
+          // dense block where the neighbours are already saturated.
+          color: body.target ? '#ffffff' : body.roofColour,
+          weight: body.target ? 1.5 : 1,
         }}
+        eventHandlers={body.target?.openable ? { click: () => onOpen?.(body.target) } : undefined}
       >
         <Tooltip direction="top" sticky>
-          <strong>{body.name ?? 'Building'}</strong>
+          <strong>{body.target?.name ?? body.name ?? 'Building'}</strong>
           <br />
           {body.height === null || body.height === undefined
             ? 'No LiDAR cover — height unknown'
             : `${formatMetres(body.height)} · ${formatVolume(body.volume)}`}
+          {body.target ? (
+            <>
+              <br />
+              {body.target.openable ? 'Click to open this splat' : 'Marked, no splat generated yet'}
+            </>
+          ) : null}
         </Tooltip>
       </Polygon>
     </Fragment>

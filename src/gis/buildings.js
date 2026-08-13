@@ -71,3 +71,27 @@ export function formatVolume(value) {
 export function formatMetres(value) {
   return value === null || value === undefined ? '—' : `${value.toFixed(1)} m`
 }
+
+/**
+ * Is [lon, lat] inside this ring? Ray casting, lon/lat order.
+ *
+ * Used to decide which measured buildings fall inside a user's drawn outline.
+ * Plane geometry on degrees, with no projection: over a footprint-sized ring
+ * the error is far below the precision of a hand-drawn corner, and the ring is
+ * closed implicitly by starting the walk at the last vertex.
+ */
+export function ringContains(ring, lon, lat) {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i]
+    const [xj, yj] = ring[j]
+    // Only edges that straddle the ray's latitude can cross it. The strict
+    // inequality on one side is what stops a vertex exactly on the ray from
+    // counting twice.
+    const straddles = (yi > lat) !== (yj > lat)
+    if (straddles && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside
+    }
+  }
+  return inside
+}

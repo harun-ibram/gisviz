@@ -116,6 +116,22 @@ function SplatMap({ className = '' }) {
   const withSplat = features.filter((feature) => feature.modelPath).length
   const withOutline = features.filter((feature) => feature.rings.length > 0).length
 
+  // The outlines the building layer matches against, so a measured building
+  // inside one of them can be drawn as that splat's own subject rather than as
+  // anonymous context. Memoised because it feeds a useMemo down there.
+  const targets = useMemo(
+    () => features
+      .filter((feature) => feature.rings.length > 0)
+      .map((feature) => ({
+        key: feature.key,
+        name: feature.name,
+        rings: feature.rings,
+        openable: Boolean(feature.modelPath),
+        modelPath: feature.modelPath,
+      })),
+    [features],
+  )
+
   // Buildings are fetched for the viewport, not the library, so their state is
   // reported separately — "nothing here" and "you are too far out" are
   // different answers and only one of them is worth acting on.
@@ -125,14 +141,17 @@ function SplatMap({ className = '' }) {
     if (buildings.kind === 'error') return `buildings unavailable — ${buildings.message}`
     if (buildings.shown === 0) return 'no buildings measured here'
     const clipped = buildings.total > buildings.shown ? ` of ${buildings.total}` : ''
-    return `${buildings.measured}/${buildings.shown}${clipped} buildings with a LiDAR height`
+    const matched = buildings.splats > 0
+      ? ` · ${buildings.splats} ${buildings.splats === 1 ? 'is' : 'are'} yours`
+      : ''
+    return `${buildings.measured}/${buildings.shown}${clipped} buildings with a LiDAR height${matched}`
   })()
 
-  const open = (feature) => {
+  const open = useCallback((feature) => {
     if (!feature.modelPath) return
     // Same state shape Home.jsx uses, so the viewer's existing effect picks it up.
     navigate('/viewer', { state: { modelPath: feature.modelPath, name: feature.name } })
-  }
+  }, [navigate])
 
   return (
     <div className={`gv-gis-map gv-splat-map ${className}`.trim()}>
@@ -155,7 +174,12 @@ function SplatMap({ className = '' }) {
 
           {/* Buildings first of all: they are the ground layer, and both the
               drawn outline and the dots have to stay readable on top. */}
-          <MapBuildings apiBaseUrl={apiBaseUrl} onStatus={handleBuildings} />
+          <MapBuildings
+            apiBaseUrl={apiBaseUrl}
+            onStatus={handleBuildings}
+            targets={targets}
+            onOpen={open}
+          />
 
           {/* Outlines before markers, deliberately. Both are SVG paths in the
               same overlay pane, where paint order is DOM order — so mounting
@@ -263,6 +287,16 @@ function SplatMap({ className = '' }) {
               />
               no LiDAR
             </span>
+            {buildings.splats > 0 ? (
+              <span className="map-key-item">
+                <i
+                  className="map-key-swatch map-key-swatch--splat"
+                  style={{ background: SPLAT_POINT }}
+                  aria-hidden="true"
+                />
+                your splat
+              </span>
+            ) : null}
           </div>
         ) : null}
 

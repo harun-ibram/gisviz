@@ -108,7 +108,7 @@ object. Worth it for a single object in a cluttered scene; pointless for a scene
 capture, where it will happily mask away most of what you wanted. Both sets of
 weights are baked into the image, so toggling this needs no rebuild.
 
-## Two things to know before touching the image
+## Three things to know before touching the image
 
 **COLMAP is built from source, not apt** — the same trap `splat_app.py`
 documents at length. The distro package has no CUDA, COLMAP then falls back to
@@ -132,6 +132,25 @@ container is 3.10 for Modal's sake, GS2Mesh lives in a 3.8 venv at
 entrypoint, so nothing is lost — but it does mean **the wrapper cannot import
 anything from GS2Mesh's environment.** That is why the splat's vertex count is
 parsed off the PLY header by hand instead of with `plyfile`.
+
+**`requirements.txt` is installed verbatim — do not curate it.** The image runs
+`grep -v '^third_party/' requirements.txt | pip install -r`, dropping only the
+four local-path lines that are installed separately as compiled packages.
+Everything else goes in as upstream wrote it, including things that look like
+notebook-only extras. `k3d` is the cautionary case: it reads as a Jupyter
+visualisation library, but `gs2mesh_utils/colmap_utils.py` imports
+`gs2mesh_utils/third_party/visualization/visualize.py` at module scope and that
+imports `k3d` — so leaving it out killed `run_single.py` on its own line 12,
+before any job did work.
+
+The build's last step guards against a repeat: `python -c "import run_single"`
+from `/opt/gs2mesh` pulls the entire `gs2mesh_utils` tree (and through it DLNR,
+the 3DGS `scene`/`gaussian_renderer`/`arguments` packages, SAM2 and
+GroundingDINO) at import scope, while its actual work stays behind a `__main__`
+guard. A missing dependency now fails the image build instead of the job. Note
+that check needs the real cwd — `masker_utils.py` does a cwd-relative
+`import third_party.GroundingDINO.…`, which is also why `process()` passes
+`cwd=GS2MESH_DIR` to the subprocess.
 
 Related: the clone is deliberately **not** `--recursive`.
 `third_party/{DLNR,gaussian-splatting,segment-anything-2,GroundingDINO}` are

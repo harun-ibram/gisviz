@@ -181,18 +181,19 @@ image = (
         f"{PY} -m pip install --no-build-isolation {GS2MESH_DIR}/third_party/segment-anything-2",
         f"{PY} -m pip install --no-build-isolation {GS2MESH_DIR}/third_party/GroundingDINO",
     )
-    # The rest of requirements.txt. jupyterlab/k3d/ipympl are omitted — they
-    # only serve custom_data.ipynb, which this worker does not run. open3d is
-    # pinned by upstream (the TSDF stage is written against 0.17's API).
+    # The rest of requirements.txt, read from the file itself rather than
+    # transcribed here. Only the four local-path lines are dropped — those are
+    # the packages installed above, and pip would rebuild them from source.
     #
-    # opencv-python, not -headless: GroundingDINO's own requirements.txt asks
-    # for the full build and was installed above, so pulling in -headless here
-    # would leave two packages both owning `cv2`. libgl1 is in the apt layer for
-    # exactly this reason.
+    # Installing it verbatim is deliberate. Curating this list by what "looks
+    # like" a notebook-only dependency does not work: k3d reads as one, but
+    # gs2mesh_utils/colmap_utils.py imports
+    # gs2mesh_utils/third_party/visualization/visualize.py at module scope and
+    # *that* imports k3d — so dropping it kills run_single.py on its own line
+    # 12, before a single job does any work. Take upstream's list as given.
     .run_commands(
-        f"{PY} -m pip install huggingface_hub scipy tensorboard opt_einsum imageio"
-        " opencv-python scikit-image einops matplotlib plotly"
-        " 'open3d==0.17.0' trimesh tqdm plyfile",
+        f"grep -v '^third_party/' {GS2MESH_DIR}/requirements.txt > /tmp/gs2mesh-reqs.txt",
+        f"{PY} -m pip install -r /tmp/gs2mesh-reqs.txt",
     )
     # ---------------------------------------------------------------------
     # Pretrained weights, at the paths the code hard-codes.
@@ -221,6 +222,15 @@ image = (
     .run_commands(
         f'{PY} -c "import torch, diff_gaussian_rasterization, simple_knn,'
         ' groundingdino, sam2, open3d, trimesh, plyfile"',
+        # Then the check that actually matters: import the entrypoint itself.
+        # Hand-listing modules here would repeat the mistake that let a missing
+        # k3d ship — it only asserts what someone thought to name. run_single.py
+        # pulls the whole gs2mesh_utils tree (and through it DLNR, the 3DGS
+        # scene/renderer packages and the visualization module) at import scope,
+        # and its work is behind a __main__ guard, so importing it is both a
+        # complete dependency check and a no-op. Needs the real cwd: the module
+        # resolves everything off os.getcwd() and its siblings off sys.path[0].
+        f'cd {GS2MESH_DIR} && {PY} -c "import run_single"',
         # And the wrapper's own deps, in the *container* interpreter.
         "pip install boto3 requests trimesh",
     )

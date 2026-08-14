@@ -181,18 +181,19 @@ image = (
         f"{PY} -m pip install --no-build-isolation {GS2MESH_DIR}/third_party/segment-anything-2",
         f"{PY} -m pip install --no-build-isolation {GS2MESH_DIR}/third_party/GroundingDINO",
     )
-    # The rest of requirements.txt. jupyterlab/k3d/ipympl are omitted — they
-    # only serve custom_data.ipynb, which this worker does not run. open3d is
-    # pinned by upstream (the TSDF stage is written against 0.17's API).
+    # The rest of requirements.txt, read from the file itself rather than
+    # transcribed here. Only the four local-path lines are dropped — those are
+    # the packages installed above, and pip would rebuild them from source.
     #
-    # opencv-python, not -headless: GroundingDINO's own requirements.txt asks
-    # for the full build and was installed above, so pulling in -headless here
-    # would leave two packages both owning `cv2`. libgl1 is in the apt layer for
-    # exactly this reason.
+    # Installing it verbatim is deliberate. Curating this list by what "looks
+    # like" a notebook-only dependency does not work: k3d reads as one, but
+    # gs2mesh_utils/colmap_utils.py imports
+    # gs2mesh_utils/third_party/visualization/visualize.py at module scope and
+    # *that* imports k3d — so dropping it kills run_single.py on its own line
+    # 12, before a single job does any work. Take upstream's list as given.
     .run_commands(
-        f"{PY} -m pip install huggingface_hub scipy tensorboard opt_einsum imageio"
-        " opencv-python scikit-image einops matplotlib plotly"
-        " 'open3d==0.17.0' trimesh tqdm plyfile",
+        f"grep -v '^third_party/' {GS2MESH_DIR}/requirements.txt > /tmp/gs2mesh-reqs.txt",
+        f"{PY} -m pip install -r /tmp/gs2mesh-reqs.txt",
     )
     # ---------------------------------------------------------------------
     # Pretrained weights, at the paths the code hard-codes.
@@ -221,6 +222,25 @@ image = (
     .run_commands(
         f'{PY} -c "import torch, diff_gaussian_rasterization, simple_knn,'
         ' groundingdino, sam2, open3d, trimesh, plyfile"',
+        # Then the check that actually matters: import the entrypoint itself.
+        # Hand-listing modules here would repeat the mistake that let a missing
+        # k3d ship — it only asserts what someone thought to name. run_single.py
+        # pulls the whole gs2mesh_utils tree (and through it DLNR, the 3DGS
+        # scene/renderer packages and the visualization module) at import scope,
+        # and its work is behind a __main__ guard, so importing it is both a
+        # complete dependency check and a no-op. Needs the real cwd: the module
+        # resolves everything off os.getcwd() and its siblings off sys.path[0].
+        f'cd {GS2MESH_DIR} && {PY} -c "import run_single"',
+        # The check above uses an absolute interpreter path, so by construction
+        # it cannot catch the *other* way this breaks: run_single.py starts
+        # training with `os.system("python train.py …")`, a bare `python` off
+        # PATH. Reproduce that exactly — same cwd, same bare command, same
+        # imports train.py opens with — so a PATH that resolves to the
+        # container's torch-less 3.10 fails the build rather than surfacing
+        # after SfM has already burned GPU minutes.
+        f"cd {GS2MESH_DIR}/third_party/gaussian-splatting"
+        f" && PATH={VENV}/bin:$PATH python -c"
+        ' "import torch, arguments, scene, gaussian_renderer"',
         # And the wrapper's own deps, in the *container* interpreter.
         "pip install boto3 requests trimesh",
     )
@@ -335,6 +355,56 @@ def _find_mesh(colmap_name: str) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
+def _export_glb(mesh_ply: str, mesh_glb: str) -> None:
+    """
+    Convert the TSDF mesh to .glb, with a material that says what it is.
+
+    The obvious one-liner — ``trimesh.load(ply).export(glb)`` — writes correct
+    geometry and correct colours and still renders brown-to-black in a viewer
+    that has no environment map. A vertex-coloured mesh gives trimesh no
+    material to write, so the primitive goes out with no ``material`` key at
+    all, and glTF says a primitive without one takes the *default* material —
+    which is ``metallicFactor: 1``. A fully metallic surface has no diffuse
+    term: it shows nothing but its own reflections. Model viewers hide that by
+    shipping a default studio IBL for it to reflect. A bare three.js scene has
+    none, so all that survived was specular from the scene's lamps, tinted their
+    colour. Hence a brown mesh from a file nothing was wrong with.
+
+    So write the material explicitly instead of inheriting a default nobody
+    meant. TextureVisuals is the visual that carries one; the vertex colours
+    ride in its ``vertex_attributes`` rather than in a ColorVisuals, and
+    trimesh's exporter reads COLOR_0 from either, so the colour data in the
+    output is unchanged down to the byte and the file merely gains a material.
+    """
+    import trimesh
+    from trimesh.visual import TextureVisuals
+    from trimesh.visual.material import PBRMaterial
+
+    # force="mesh": the material below lives on a single mesh's visual, so a
+    # multi-part Scene would silently keep the default material instead.
+    mesh = trimesh.load(mesh_ply, force="mesh")
+    colours = mesh.visual.vertex_colors if mesh.visual.kind == "vertex" else None
+
+    visual = TextureVisuals(material=PBRMaterial(
+        # Photogrammetric colour is already lit — the capture's own lighting is
+        # baked into it. Non-metallic and fully rough is the closest PBR gets to
+        # "show these colours and do not invent gloss on top of them".
+        metallicFactor=0.0,
+        roughnessFactor=1.0,
+        # White, because COLOR_0 is *multiplied* by this factor. Any other value
+        # would tint every vertex in the mesh.
+        baseColorFactor=[255, 255, 255, 255],
+    ))
+    if colours is not None:
+        # Not a constructor argument — but it is the attribute the exporter
+        # looks for by name on a visual that isn't a ColorVisuals, which is the
+        # only way to keep vertex colours *and* declare a material.
+        visual.vertex_attributes = {"color": colours}
+    mesh.visual = visual
+
+    mesh.export(mesh_glb)
+
+
 def _cleanup(colmap_name: str) -> None:
     """
     Drop this job's inputs and outputs from the container.
@@ -435,10 +505,25 @@ def process(
             # Skip the stage outright so that isn't mistaken for a failure.
             command.append("--skip_masking")
 
+        # Putting the venv's bin first on PATH is what makes the *nested*
+        # shell-outs work, and it is not optional. run_single.py runs the
+        # training stage as `os.system("python train.py …")` — a bare `python`,
+        # resolved through PATH. Invoking run_single.py by absolute interpreter
+        # path does not carry into that: the child would find the container's
+        # 3.10, which has no torch, and die with ModuleNotFoundError before
+        # training a single iteration. The COLMAP stages are unaffected either
+        # way, since they shell out to `colmap` and /usr/local/bin is already on
+        # PATH — which is exactly why this fails *after* SfM succeeds.
+        env = {
+            **os.environ,
+            "PATH": f"{VENV}/bin:{os.environ['PATH']}",
+            "VIRTUAL_ENV": VENV,
+        }
+
         # check=True catches the wrapper dying, but proves little on its own:
         # GS2Mesh runs COLMAP and GS training through os.system() and never
         # checks their exit codes. The globs below are the real test.
-        subprocess.run(command, cwd=GS2MESH_DIR, check=True)
+        subprocess.run(command, cwd=GS2MESH_DIR, env=env, check=True)
 
         # 3) Collect both artifacts. The splat needs no PLY-schema surgery
         # (unlike gpu/sugar_app.py's Inria shim) — GS2Mesh trains with Inria's
@@ -451,11 +536,11 @@ def process(
         # 4) .glb rather than the TSDF .ply, for the same reason
         # gpu/sugar_app.py exports one: a single key, a single signed URL, and a
         # format the viewer already loads. TSDF meshes carry vertex colours
-        # rather than a texture atlas, and trimesh preserves those through glTF.
-        import trimesh
-
+        # rather than a texture atlas, and trimesh preserves those through glTF
+        # — see _export_glb for why that alone isn't enough to make them *look*
+        # right.
         mesh_glb = os.path.join(tempfile.mkdtemp(prefix=f"gs2mesh-{job_id}-"), "mesh.glb")
-        trimesh.load(mesh_ply).export(mesh_glb)
+        _export_glb(mesh_ply, mesh_glb)
 
         # 5) Upload both, then tell the caller.
         client.upload_file(splat_ply, bucket, output_key)

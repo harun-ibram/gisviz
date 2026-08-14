@@ -343,6 +343,34 @@ def mesh(
 
         scene = trimesh.load(objs[0])
         glb_path = os.path.join(work, "mesh.glb")
+
+        # An .mtl has no notion of metalness, so trimesh's SimpleMaterial ->
+        # PBRMaterial conversion sets no metallicFactor and the exporter simply
+        # omits the key — and glTF defaults an omitted metallicFactor to *1.0*.
+        # That turns the whole mesh into a mirror: a fully metallic surface has
+        # no diffuse term, so it stops showing its own baked texture and shows
+        # only reflections of whatever is around it. Model viewers paper over
+        # this with a default studio IBL; a bare three.js scene has nothing to
+        # reflect but its lamps, which is where the brown came from. Say the
+        # thing the .mtl could not: this is a diffuse, photographed surface.
+        #
+        # to_pbr() up front rather than reaching for `.metallicFactor` on what
+        # is there: the loaded material is a SimpleMaterial, which has no such
+        # attribute, so setting it post-hoc would be silently dropped by the
+        # conversion the exporter runs anyway. And a single-material .obj loads
+        # as a bare Trimesh, not a Scene, so both shapes have to be walked.
+        parts = (
+            scene.geometry.values() if hasattr(scene, "geometry") else [scene]
+        )
+        for part in parts:
+            material = getattr(part.visual, "material", None)
+            if material is None:
+                continue
+            if not hasattr(material, "metallicFactor"):
+                material = material.to_pbr()
+                part.visual.material = material
+            material.metallicFactor = 0.0
+
         scene.export(glb_path)
 
         client.upload_file(

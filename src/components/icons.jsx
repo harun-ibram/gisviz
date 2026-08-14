@@ -173,3 +173,31 @@ export function IconClose({ size = 15 }) {
     </svg>
   )
 }
+
+export function IconPencil({ size = 15 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14.5 5.5l4 4L9 19H5v-4z" />
+      <path d="M13 7l4 4" />
+    </svg>
+  )
+}
+
+/* Points right when closed; the caller rotates it with CSS when open. */
+export function IconChevron({ size = 14 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 5l7 7-7 7" />
+    </svg>
+  )
+}
+
+/* An ungrouped stack: the group row's "break this apart" action. */
+export function IconUngroup({ size = 15 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
+      <rect x="3" y="3.5" width="8.5" height="7" rx="1.6" />
+      <rect x="12.5" y="13.5" width="8.5" height="7" rx="1.6" />
+    </svg>
+  )
+}

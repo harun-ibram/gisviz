@@ -1392,6 +1392,114 @@
   accent-color: var(--color-accent);
 }
 
+/* — layer groups — */
+
+/* The grouping checkbox only exists in picking mode, so the row grows a column
+   rather than reserving one that is empty the rest of the time. */
+.gv-layer-row[data-picking="1"] {
+  grid-template-columns: 22px 34px minmax(0, 1fr) auto;
+}
+
+.gv-layer-pick {
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.gv-layer-pick input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.gv-group-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.gv-group-bar-count {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.gv-group-bar-name { flex: 1 1 160px; min-width: 140px; }
+.gv-group-bar-select { flex: 0 1 160px; }
+.gv-group-bar .input { padding: 5px 9px; font-size: 12px; }
+
+.gv-group-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 34%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+}
+
+.gv-group-card[data-collapsed="1"] { gap: 0; }
+
+.gv-group-head {
+  display: grid;
+  grid-template-columns: 34px 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.gv-group-collapse {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  cursor: pointer;
+}
+
+.gv-group-collapse:hover { color: var(--color-accent-200); }
+.gv-group-collapse[data-open="1"] svg { transform: rotate(90deg); }
+.gv-group-collapse svg { transition: transform 120ms ease; }
+
+.gv-group-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Sized to sit in the name line without pushing the row taller. */
+.gv-group-rename {
+  padding: 2px 6px;
+  font-size: 13px;
+  max-width: 220px;
+}
+
+/* Indented under the head, so membership reads at a glance. */
+.gv-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: 20px;
+  border-left: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  margin-left: 16px;
+}
+
+.gv-group-hidden-note {
+  margin: 0;
+  font-size: 12px;
+}
+
 /* — legend — */
 .gv-legend {
   display: flex;

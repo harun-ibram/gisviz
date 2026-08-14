@@ -54,6 +54,7 @@ export default function GisLayerDetail() {
         featureFocus,
         setFeatureFocus,
         layersTotal,
+        groupOfLayer,
     } = useGisLibrary()
 
     const layer = layers.find((entry) => entry.layer_id === selectedLayerId) ?? null
@@ -91,6 +92,7 @@ export default function GisLayerDetail() {
 
             <div className="gv-detail-rows">
                 <Row label="Type" value={raster ? 'Raster' : 'Vector'} />
+                <Row label="Group" value={groupOfLayer.get(layer.layer_id)?.name} />
                 <Row label="Kind" value={layer.kind ?? layer.sublayer} />
                 <Row label="Source" value={layer.source} />
                 <Row label="Source CRS" value={layer.src_crs} />

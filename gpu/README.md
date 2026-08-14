@@ -1,4 +1,15 @@
-# Splat ingestion pipeline
+# Splat ingestion pipeline (superseded)
+
+> **The backend no longer drives this pipeline.** `/jobs/{id}/start` now spawns
+> the single-worker `gisviz-gs2mesh` app instead — see
+> [GS2MESH_README.md](GS2MESH_README.md). `splat_app.py` and `sugar_app.py` are
+> unchanged and still deployed, and everything below still describes them
+> accurately, but no backend code path spawns them: the `want_mesh` opt-in, the
+> `work_prefix` handoff bundle, the two-stage webhook and the retention table
+> are all history. Read this for the design reasoning (the COLMAP-with-CUDA
+> build note in particular still applies to the new worker) and to know what to
+> restore if GS2Mesh gets reverted — notably **EXIF-GPS georeferencing, which
+> the new worker does not have**.
 
 Turns user-uploaded photos into a Gaussian splat and, if asked for, a mesh, and
 attaches both to a map feature. GPU work runs on **Modal** (serverless,

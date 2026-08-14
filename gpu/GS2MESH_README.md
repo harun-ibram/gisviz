@@ -1,13 +1,26 @@
 # GS2Mesh worker
 
-A third GPU worker, alongside `splat_app.py` and `sugar_app.py`, that produces
-**both** a Gaussian splat and a mesh for an object in a single call, using
-[GS2Mesh](https://github.com/yanivw12/gs2mesh).
+The GPU worker the backend drives: photos in, **both** a Gaussian splat and a
+mesh out, in a single call, using [GS2Mesh](https://github.com/yanivw12/gs2mesh).
 
-It is **standalone**. Nothing in `src/main.py` references it — it is not wired
-into the `/jobs` endpoints, the `Job` model, or the webhook handlers that set
-`model_path` / `mesh_path`. The existing splat → SuGaR pipeline documented in
-[README.md](README.md) is untouched and remains the one the backend drives.
+**This replaced the two-stage `splat_app` → `sugar_app` pipeline.**
+`/jobs/{id}/start` spawns `gisviz-gs2mesh`/`process` and nothing else. Those two
+older apps and their sources under `gpu/` are untouched and still deployed, but
+no backend code path spawns them any more —
+[README.md](README.md) documents them as history. Reverting means pointing
+`_spawn_gs2mesh_job` in `src/main.py` back at `gisviz-splat` and restoring the
+two-stage webhook handlers.
+
+Two consequences of the switch worth knowing:
+
+- **EXIF-GPS georeferencing is gone.** `splat_app.py` fitted a 7-DOF similarity
+  from photo GPS and trained in ENU metres; GS2Mesh has no equivalent, so its
+  output is back in COLMAP's arbitrary frame and needs hand-placing in the
+  viewer. If automatic placement matters more than mesh quality, that is the
+  reason to revert.
+- **The splat no longer arrives early.** It used to be servable ~30 minutes
+  before the mesh. Both now land together, so `status` and `mesh_status` reach
+  `done` at the same moment.
 
 ## How it differs from splat_app + sugar_app
 
@@ -50,6 +63,9 @@ No new secrets — it reuses the two the other workers already use:
 
 ## Calling it
 
+`src/main.py:_spawn_gs2mesh_job` does this, from both `/jobs/{id}/start` and the
+`/jobs/{id}/mesh` re-run:
+
 ```python
 modal.Function.from_name("gisviz-gs2mesh", "process").spawn(
     job_id,          # namespaces this run's working directories
@@ -63,8 +79,11 @@ modal.Function.from_name("gisviz-gs2mesh", "process").spawn(
 )
 ```
 
-The R2 keys are entirely the caller's choice — with no backend wiring there is
-nothing enforcing the `models/{job_id}/…` convention the other pipeline uses.
+The worker imposes no key convention of its own; the backend passes
+`models/{job_id}/{slug}.ply` and the same path with a `.glb` extension, so the
+mesh is derivable from `model_path` without another round trip. The last three
+arguments are defaulted and the backend does not currently pass them — raising
+`downsample` is the first thing to try if a large capture OOMs.
 
 Webhook payload on success:
 
@@ -76,6 +95,10 @@ Webhook payload on success:
 and on failure `{"status": "failed", "backend": "gs2mesh", "error": "..."}`. As
 with the other two workers, a webhook always fires so a caller polling on it can
 never hang.
+
+A failure sets both `status` and `mesh_status` to `failed` and **keeps the
+uploaded photos**, which is what makes `POST /jobs/{id}/mesh` able to re-run the
+whole pipeline without a fresh upload. Success purges them.
 
 ### Automasking
 

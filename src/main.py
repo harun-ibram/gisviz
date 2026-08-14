@@ -101,10 +101,11 @@ def _row_to_dict(obj: SQLModel, geojson: str | None, **extra: str | None) -> dic
 
 def _mesh_fields(mesh_path: str | None) -> dict[str, Any]:
     """
-    The SuGaR mesh half of a model_path response.
+    The mesh half of a model_path response.
 
-    Always present, always nullable: meshing runs after the splat is already
-    served, so a target that has a model does not necessarily have a mesh yet.
+    Always present, always nullable. New jobs attach both artifacts at once, but
+    a target reconstructed under the old splat->SuGaR pipeline may have a model
+    and no mesh — so callers must still treat it as optional.
     """
     if not mesh_path:
         return {"mesh_path": None, "mesh_url": None, "mesh_filename": None}
@@ -177,8 +178,8 @@ async def get_node_model_path(node_id: int, session: SessionDep):
         "model_path": node.model_path,
         "url": get_signed_url(node.model_path),
         "filename": node.model_path.split("/")[-1],
-        # Null until SuGaR has run over the splat, which happens well after the
-        # model itself is servable — callers must treat it as optional.
+        # Nullable — see _mesh_fields. Set alongside model_path for anything
+        # reconstructed by GS2Mesh, absent for older splat-only targets.
         **_mesh_fields(node.mesh_path),
     }
     
@@ -498,31 +499,40 @@ async def get_region_model_path(id: str, session: SessionDep):
 
 
 # ---------------------------------------------------------------------------
-# Splat ingestion: photos -> COLMAP + Gaussian splatting (on Modal) -> R2.
-# See gpu/splat_app.py for the GPU worker and Plan.md for the full flow.
+# Splat ingestion: photos -> GS2Mesh (on Modal) -> a splat and a mesh in R2.
+#
+# Driven by the single-worker `gisviz-gs2mesh` app (gpu/gs2mesh_app.py), which
+# replaced the two-stage gisviz-splat -> gisviz-sugar pipeline. Those two apps
+# are still deployed and their sources are untouched under gpu/, but nothing
+# here spawns them any more.
+#
+# The shape of the change: one Modal call now yields *both* artifacts, so the
+# splat->mesh handoff this module used to orchestrate is gone. No bundle is
+# staged between stages, there is no window where the splat is servable and the
+# mesh is not, and one webhook reports both.
 # ---------------------------------------------------------------------------
 
 class CreateJobRequest(BaseModel):
     target_type: str          # "node" | "region"
     target_id: str            # OSMNode.node_id (as str) or Region.id
     filenames: list[str]      # photo filenames the client will upload
-    # Opt in to the SuGaR mesh stage, which roughly doubles processing time.
-    # Defaults off so a caller that never heard of this field gets the fast
-    # path — the mesh is the extra, not the baseline.
-    want_mesh: bool = False
+    # Accepted for backwards compatibility, but no longer gates any work: the
+    # mesh is what GS2Mesh's pipeline is *for* — the splat is an intermediate on
+    # the way to it — so there is no cheaper splat-only path to opt out into.
+    # Every job now produces both, and the mesh is attached either way.
+    want_mesh: bool = True
 
 
 class WebhookRequest(BaseModel):
-    # Which worker is reporting. Defaults to the splat stage so a worker
-    # deployed before this field existed still lands in the right branch.
-    stage: str = "splat"      # "splat" | "mesh"
     status: str               # "done" | "failed"
-    output_key: str | None = None
+    output_key: str | None = None   # R2 key of the 3DGS .ply
+    mesh_key: str | None = None     # R2 key of the .glb
     error: str | None = None
-    # splat stage: where the SuGaR handoff bundle was staged. Absent when
-    # staging failed, which is what makes the mesh stage skippable.
-    work_prefix: str | None = None
-    mesh_key: str | None = None   # mesh stage: R2 key of the produced .glb
+    # Reported for the logs only. The old pipeline had no equivalent — SuGaR
+    # never told us how large the splat it consumed was.
+    backend: str | None = None
+    gaussians: int | None = None
+    mesh_bytes: int | None = None
 
 
 @app.post("/jobs", dependencies=[RequireUser])
@@ -570,35 +580,57 @@ def _target_name(job: Job, session: Session) -> str | None:
     return target.name
 
 
+def _spawn_gs2mesh_job(job: Job, session: Session) -> None:
+    """
+    Spawn the one Modal call that produces both artifacts.
+
+    Sets output_key/mesh_key and both status fields; the caller commits. Shared
+    by /jobs/{id}/start and the /jobs/{id}/mesh re-run, which under a
+    single-stage pipeline are the same operation.
+    """
+    import modal  # lazy import: keep the API importable even if modal is absent
+
+    # Name the objects after the target so downloads and the viewer's filename
+    # (model_path.split("/")[-1]) read as "old_town.ply" rather than "scene.ply"
+    # for every splat ever produced. The job_id stays in the prefix, so it is
+    # still what guarantees uniqueness — two targets may share a name, and
+    # re-running a job must not overwrite the previous splat. The mesh is the
+    # same directory and slug with a different extension: "next to the gaussian
+    # model" is meant literally, so anything holding model_path can derive the
+    # mesh key without another round trip.
+    output_key = job.output_key or (
+        f"models/{job.id}/{slugify(_target_name(job, session) or 'scene')}.ply"
+    )
+    mesh_key = f"{output_key.rsplit('.', 1)[0]}.glb"
+    backend_url = os.environ["BACKEND_PUBLIC_URL"].rstrip("/")
+    webhook_url = f"{backend_url}/jobs/{job.id}/webhook"
+
+    process = modal.Function.from_name("gisviz-gs2mesh", "process")
+    call = process.spawn(job.id, job.input_prefix, output_key, mesh_key, webhook_url)
+
+    job.output_key = output_key
+    job.mesh_key = mesh_key
+    job.modal_call_id = getattr(call, "object_id", None)
+    job.mesh_call_id = job.modal_call_id  # one call produces both artifacts
+    job.status = "processing"
+    job.error = None
+    # Both artifacts now arrive together, so the mesh is in flight from the same
+    # moment the splat is — never 'skipped', which only existed because the old
+    # pipeline could reach the mesh stage with nothing staged to mesh from.
+    job.mesh_status = "processing"
+    job.mesh_error = None
+
+
 @app.post("/jobs/{job_id}/start", dependencies=[RequireUser])
 async def start_job(job_id: str, session: SessionDep):
     """Kick off the GPU job on Modal once the photos have been uploaded."""
-    import modal  # lazy import: keep the API importable even if modal is absent
-
     job = session.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status == "processing":
         return {"job_id": job_id, "status": job.status}
 
-    # Name the object after the target so downloads and the viewer's filename
-    # (model_path.split("/")[-1]) read as "old_town.ply" rather than "scene.ply"
-    # for every splat ever produced. The job_id stays in the prefix, so it is
-    # still what guarantees uniqueness — two targets may share a name, and
-    # re-running a job must not overwrite the previous splat.
-    output_key = f"models/{job_id}/{slugify(_target_name(job, session) or 'scene')}.ply"
-    backend_url = os.environ["BACKEND_PUBLIC_URL"].rstrip("/")
-    webhook_url = f"{backend_url}/jobs/{job_id}/webhook"
-
-    process = modal.Function.from_name("gisviz-splat", "process")
-    # want_mesh rides along so the worker can skip staging the SuGaR handoff
-    # bundle — re-uploading every training image is pure waste when no mesh
-    # will consume it.
-    call = process.spawn(job_id, job.input_prefix, output_key, webhook_url, job.want_mesh)
-
-    job.output_key = output_key
-    job.modal_call_id = getattr(call, "object_id", None)
-    job.status = "processing"
+    _spawn_gs2mesh_job(job, session)
     job.updated_at = datetime.now(timezone.utc)
     session.add(job)
     session.commit()
@@ -612,120 +644,83 @@ async def get_job(job_id: str, session: SessionDep):
         raise HTTPException(status_code=404, detail="Job not found")
     return {
         "job_id": job.id,
-        # Still the splat's status alone — clients poll this for "is the model
-        # ready?" and meshing must not delay that answer.
+        # A client polling this for "is the model ready?" still behaves
+        # correctly, but the answer now arrives at the same time as the mesh's
+        # rather than roughly half an hour earlier: GS2Mesh produces both in one
+        # pass, so there is no longer a window where one is servable and the
+        # other is not.
         "status": job.status,
         "target_type": job.target_type,
         "target_id": job.target_id,
         "output_key": job.output_key,
         "error": job.error,
-        # Lets a client tell the two meanings of mesh_status='skipped' apart:
-        # not requested (want_mesh false) vs. requested but unbuildable.
+        # Vestigial: every job produces a mesh now. Kept in the response so
+        # existing clients do not see a field disappear.
         "want_mesh": job.want_mesh,
+        # Tracks `status` exactly, since one run yields both. 'skipped' is no
+        # longer reachable for new jobs.
         "mesh_status": job.mesh_status,
         "mesh_key": job.mesh_key,
         "mesh_error": job.mesh_error,
     }
 
 
-def _spawn_mesh_job(job: Job) -> None:
-    """Run SuGaR over the splat this job just produced."""
-    import modal  # lazy import, for the same reason as start_job
-
-    backend_url = os.environ["BACKEND_PUBLIC_URL"].rstrip("/")
-    webhook_url = f"{backend_url}/jobs/{job.id}/webhook"
-    # Same directory and slug as the splat, different extension. "Next to the
-    # gaussian model" is meant literally: anything holding model_path can derive
-    # the mesh key without another round trip.
-    mesh_key = f"{job.output_key.rsplit('.', 1)[0]}.glb"
-
-    mesh = modal.Function.from_name("gisviz-sugar", "mesh")
-    call = mesh.spawn(job.id, job.output_key, job.work_prefix, mesh_key, webhook_url)
-
-    job.mesh_key = mesh_key
-    job.mesh_call_id = getattr(call, "object_id", None)
-    job.mesh_status = "processing"
-    job.mesh_error = None
-
-
 def _purge_inputs(job: Job) -> None:
     """
-    Drop the uploaded photos and any staged handoff bundle.
+    Drop the uploaded photos.
 
     Called once nothing that still has to run needs them. r2_delete_prefix is
     best-effort by design — orphaned objects cost pennies, while raising here
     would lose the result the caller recorded a line above.
     """
     deleted = r2_delete_prefix(job.input_prefix)
+    # GS2Mesh stages no handoff bundle — it needs no second stage to hand off
+    # to. Still cleaned up here so jobs created under the old two-stage pipeline
+    # do not leave their bundles behind forever.
     if job.work_prefix:
         deleted += r2_delete_prefix(job.work_prefix)
     job.inputs_deleted_at = datetime.now(timezone.utc)
     logger.info("Job %s: purged %d source object(s)", job.id, deleted)
 
 
-def _handle_splat_result(job: Job, body: WebhookRequest, session: Session) -> None:
-    """Record the finished splat, then hand off to the mesh stage."""
+def _handle_result(job: Job, body: WebhookRequest, session: Session) -> None:
+    """
+    Record both artifacts from a finished GS2Mesh run.
+
+    One worker, one webhook, both artifacts — so unlike the two-stage pipeline
+    there is no partial-success path to reconcile here. Either the run produced
+    a splat and a mesh or it produced neither.
+    """
     if body.status != "done":
         job.status = "failed"
         job.error = body.error
-        return
-
-    output_key = body.output_key or job.output_key
-    target = _job_target(job, session)
-    if not target:
-        raise HTTPException(status_code=404, detail="Target feature not found")
-    target.model_path = output_key
-    session.add(target)
-    job.output_key = output_key
-    job.status = "done"
-
-    # Everything below is the bonus stage. The splat is stored and the job is
-    # already 'done', so nothing here may raise: the worst outcome allowed is a
-    # model without a mesh.
-    job.work_prefix = body.work_prefix
-    if not job.want_mesh:
-        # Nobody asked for a mesh, so no second stage will ever read the photos.
-        # Release them now instead of waiting on a run that will not happen.
-        job.mesh_status = "skipped"
-        job.mesh_error = None  # not a failure: a mesh was never requested
-        _purge_inputs(job)
-        return
-
-    if not body.work_prefix:
-        # Requested, but the worker staged nothing to mesh from. Unretryable —
-        # /jobs/{id}/mesh needs a work_prefix — so the photos are dead weight.
-        job.mesh_status = "skipped"
-        job.mesh_error = "The worker staged no inputs for meshing."
-        _purge_inputs(job)
-        return
-
-    try:
-        _spawn_mesh_job(job)
-    except Exception:
-        logger.warning("Could not spawn the mesh job for %s", job.id, exc_info=True)
-        job.mesh_status = "failed"
-        job.mesh_error = "Could not start the mesh job."
-
-
-def _handle_mesh_result(job: Job, body: WebhookRequest, session: Session) -> None:
-    """Record the finished mesh and, on success, purge the photos it consumed."""
-    if body.status != "done":
-        # Keep the photos. A failed mesh is the one case where retrying is still
-        # possible without asking for the whole upload again.
         job.mesh_status = "failed"
         job.mesh_error = body.error
+        # Deliberately no purge: the photos are the only thing a re-run needs,
+        # and POST /jobs/{id}/mesh exists to re-run without asking for them
+        # again.
         return
 
-    mesh_key = body.mesh_key or job.mesh_key
     target = _job_target(job, session)
     if not target:
         raise HTTPException(status_code=404, detail="Target feature not found")
+
+    output_key = body.output_key or job.output_key
+    mesh_key = body.mesh_key or job.mesh_key
+    target.model_path = output_key
     target.mesh_path = mesh_key
     session.add(target)
+
+    job.output_key = output_key
+    job.status = "done"
     job.mesh_key = mesh_key
     job.mesh_status = "done"
+    logger.info(
+        "Job %s: %s gaussians, %s byte mesh via %s",
+        job.id, body.gaussians, body.mesh_bytes, body.backend or "gs2mesh",
+    )
 
-    # Both stages that need the photos have now run.
+    # Nothing else will read the photos.
     _purge_inputs(job)
 
 
@@ -737,10 +732,7 @@ async def job_webhook(
     x_webhook_secret: Annotated[str | None, Header()] = None,
 ):
     """
-    Called by the Modal workers on completion. Secret-verified before trust.
-
-    Both stages report here — the splat worker (gpu/splat_app.py) and the mesh
-    worker (gpu/sugar_app.py) — distinguished by ``stage``.
+    Called by gpu/gs2mesh_app.py on completion. Secret-verified before trust.
     """
     if x_webhook_secret != os.environ["JOB_WEBHOOK_SECRET"]:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
@@ -749,10 +741,7 @@ async def job_webhook(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if body.stage == "mesh":
-        _handle_mesh_result(job, body, session)
-    else:
-        _handle_splat_result(job, body, session)
+    _handle_result(job, body, session)
 
     job.updated_at = datetime.now(timezone.utc)
     session.add(job)
@@ -762,31 +751,30 @@ async def job_webhook(
 
 @app.post("/jobs/{job_id}/mesh", dependencies=[RequireUser])
 async def retry_mesh_job(job_id: str, session: SessionDep):
-    """Re-run SuGaR for a job whose mesh stage failed."""
+    """
+    Re-run a failed job.
+
+    Kept at this path, and still keyed off mesh_status, because that is the
+    contract the frontend already calls. What it does underneath has changed: a
+    mesh can no longer fail independently of its splat, so "retry the mesh" is
+    now "re-run the whole pipeline" — which is affordable precisely because a
+    failure leaves the photos in place.
+    """
     job = session.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.mesh_status == "processing":
         return {"job_id": job_id, "mesh_status": job.mesh_status}
-    # No mesh was asked for, so the photos went the moment the splat landed.
-    # Turning the mesh on after the fact would mean re-uploading them.
-    if not job.want_mesh:
-        raise HTTPException(
-            status_code=409,
-            detail="No mesh was requested for this job; its photos were purged after the splat.",
-        )
-    if not job.output_key or not job.work_prefix:
-        raise HTTPException(
-            status_code=409, detail="This job has no staged splat to build a mesh from"
-        )
-    # The handoff bundle is purged along with the photos once a mesh succeeds,
-    # so there is nothing left to re-run against.
+    # The photos are purged on success, so a finished job cannot be re-run
+    # without a fresh upload. This also covers jobs from the old pipeline whose
+    # photos went when their splat landed.
     if job.inputs_deleted_at:
         raise HTTPException(
-            status_code=409, detail="This job's inputs were already purged"
+            status_code=409,
+            detail="This job's photos were already purged; re-running means re-uploading them.",
         )
 
-    _spawn_mesh_job(job)
+    _spawn_gs2mesh_job(job, session)
     job.updated_at = datetime.now(timezone.utc)
     session.add(job)
     session.commit()

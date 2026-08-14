@@ -254,12 +254,15 @@ class Job(SQLModel, table=True):
     __tablename__ = "jobs"
     __table_args__ = {"schema": "public"}
 
-    # A splat-generation job: photos -> COLMAP + Gaussian splatting -> R2 -> model_path,
-    # then SuGaR on top of that splat -> .glb in R2 -> mesh_path.
+    # A reconstruction job: photos -> GS2Mesh on Modal -> a 3DGS .ply at
+    # model_path *and* a .glb at mesh_path, both from one worker call.
+    # See gpu/gs2mesh_app.py. This replaced a two-stage splat->SuGaR pipeline,
+    # which is why several fields below come in splat/mesh pairs that now always
+    # move together.
     id: str = Field(primary_key=True)
-    # Deliberately still only about the *splat*: 'done' means the .ply is served.
-    # Meshing runs afterwards and reports through mesh_status, so clients that
-    # poll this field keep behaving exactly as they did before SuGaR existed.
+    # Nominally the splat's status, and still what clients poll for "is the
+    # model ready?". It now reaches 'done' at the same moment mesh_status does,
+    # rather than roughly half an hour earlier.
     status: str = Field(default="pending")  # pending | processing | done | failed
     target_type: str = Field(nullable=False)  # "node" | "region"
     target_id: str = Field(nullable=False)  # OSMNode.node_id (as str) or Region.id
@@ -267,22 +270,23 @@ class Job(SQLModel, table=True):
     output_key: str | None = Field(default=None, sa_column=Column("output_key", Text))
     modal_call_id: str | None = Field(default=None, sa_column=Column("modal_call_id", Text))
     error: str | None = Field(default=None, sa_column=Column("error", Text))
-    # Whether the user asked for a SuGaR mesh on top of the splat. Opt-in: the
-    # mesh roughly doubles processing time, and false means the photos are
-    # purged as soon as the splat lands, because nothing else will read them.
+    # Vestigial. Under the old pipeline the mesh was opt-in because it roughly
+    # doubled processing time; GS2Mesh's mesh is the goal of the run rather than
+    # an extra stage on top of it, so there is no splat-only path to opt out
+    # into. Column and API field kept so old rows and old clients still read.
     want_mesh: bool = Field(
-        default=False,
+        default=True,
         sa_column=Column("want_mesh", Boolean, nullable=False, server_default=text("false")),
     )
-    # R2 prefix holding the handoff bundle the splat worker stages for SuGaR
-    # (cameras.json, dataparser_transforms.json, the training images). Only
-    # staged when want_mesh is set.
+    # Legacy: the R2 prefix the old splat worker staged a SuGaR handoff bundle
+    # under. Never set for new jobs — GS2Mesh has no second stage to hand off to
+    # — but still read when purging so old jobs' bundles get cleaned up.
     work_prefix: str | None = Field(default=None, sa_column=Column("work_prefix", Text))
     mesh_key: str | None = Field(default=None, sa_column=Column("mesh_key", Text))
-    # NULL until the splat finishes, then:
-    # processing | done | failed | skipped. 'skipped' covers both "no mesh was
-    # requested" (want_mesh false, mesh_error NULL) and "the worker staged no
-    # bundle, so there is nothing to mesh" (mesh_error explains).
+    # processing | done | failed, moving in lockstep with `status` because one
+    # worker call produces both artifacts. 'skipped' is legacy — it existed for
+    # "no mesh requested" and "nothing staged to mesh from", neither of which is
+    # reachable now — and may still appear on rows from the old pipeline.
     mesh_status: str | None = Field(default=None, sa_column=Column("mesh_status", Text))
     mesh_error: str | None = Field(default=None, sa_column=Column("mesh_error", Text))
     mesh_call_id: str | None = Field(default=None, sa_column=Column("mesh_call_id", Text))

@@ -67,6 +67,14 @@ export function IconUpload({ size = 16 }) {
   )
 }
 
+export function IconDownload({ size = 16 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 4v11M8 11l4 4 4-4M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
+    </svg>
+  )
+}
+
 export function IconMinus({ size = 16 }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

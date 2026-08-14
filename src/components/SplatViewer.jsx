@@ -9,7 +9,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
 import SplatMap from './SplatMap.jsx'
 import { getFileExtension, getFileName } from '../utils.jsx'
-import { IconClose, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx'
+import { IconClose, IconDownload, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx'
 
 // Where the splat is parked and where the camera starts. Zoom is measured
 // between the two, so both live here rather than as literals at the call sites.
@@ -334,6 +334,8 @@ const isTypingTarget = (target) =>
     const [meshError, setMeshError] = useState('')
     const [buildingsOn, setBuildingsOn] = useState(false)
     const [buildingsInfo, setBuildingsInfo] = useState(null) // { measured, total } | 'empty' | error
+    const [downloading, setDownloading] = useState(false)
+    const [downloadError, setDownloadError] = useState('')
     const [selectedFile, setSelectedFile] = useState(null)
     const [remoteSource, setRemoteSource] = useState(null) // { url, name }
     const [status, setStatus] = useState('Waiting for file upload')
@@ -384,6 +386,9 @@ const isTypingTarget = (target) =>
 
     const fetchSplatUrl = async () => {
       setError('')
+      // A download failure holds the top alert slot; left alone it would sit
+      // over the next model's status. Cleared wherever the target changes.
+      setDownloadError('')
       setStatus('Loading...')
 
       try {
@@ -868,6 +873,23 @@ const isTypingTarget = (target) =>
       ? null
       : meshError || (meshLoading ? `Loading ${getFileName(meshPath)}…` : null)
 
+    // What the download button hands over: whatever is on screen right now. A
+    // mesh that is still loading — or that failed — is not on screen; the splat
+    // still is, and that is what the click should save. `meshReady` rather than
+    // `viewMode` is therefore the test, so the button never quietly serves a
+    // file other than the one being looked at.
+    const showingMesh = meshActive && meshReady
+    const downloadTarget = showingMesh
+      ? { kind: 'remote', path: meshPath, name: getFileName(meshPath) }
+      // A local upload takes precedence over the route's splat in the scene, so
+      // it has to take precedence here too. It costs nothing to serve: the file
+      // is already in the browser.
+      : selectedFile
+        ? { kind: 'local', file: selectedFile, name: selectedFile.name }
+        : modelPath
+          ? { kind: 'remote', path: modelPath, name: getFileName(modelPath) }
+          : null
+
     // Mirrored into a ref in an effect, not during render: the splat load
     // resolves asynchronously and would otherwise read a stale closure.
     useEffect(() => {
@@ -1055,6 +1077,62 @@ const isTypingTarget = (target) =>
       buildingsRef.current = null
     }, [])
 
+    // A click on a detached anchor, rather than assigning to location: a
+    // navigation to a URL the browser decides it *can* display would replace
+    // the viewer instead of saving anything.
+    const saveAs = (href, name) => {
+      const anchor = document.createElement('a')
+      anchor.href = href
+      // Ignored for the cross-origin R2 URL — the signed Content-Disposition
+      // names that one — but it is what names a local blob.
+      anchor.download = name
+      anchor.rel = 'noopener'
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+    }
+
+    const handleDownload = async () => {
+      if (!downloadTarget || downloading) {
+        return
+      }
+
+      setDownloadError('')
+
+      if (downloadTarget.kind === 'local') {
+        const href = URL.createObjectURL(downloadTarget.file)
+        saveAs(href, downloadTarget.name)
+        // Revoking in the same tick can cancel the download that was just
+        // started; the URL only holds a reference to a file already on disk.
+        window.setTimeout(() => URL.revokeObjectURL(href), 60_000)
+        return
+      }
+
+      setDownloading(true)
+
+      try {
+        // download=true is what makes R2 send Content-Disposition: attachment.
+        // The signature covers that header, so it cannot be added client-side.
+        const response = await fetch(
+          `${API_URL}/splat-url?path=${encodeURIComponent(downloadTarget.path)}&download=true`,
+        )
+
+        if (!response.ok) {
+          throw new Error(`Could not sign the download URL (${response.status})`)
+        }
+
+        const data = await response.json()
+        saveAs(data.url, data.filename ?? downloadTarget.name)
+      } catch (downloadFailure) {
+        const message = downloadFailure instanceof Error
+          ? downloadFailure.message
+          : 'Unable to download that file.'
+        setDownloadError(message)
+      } finally {
+        setDownloading(false)
+      }
+    }
+
     const handleFileChange = (event) => {
       const file = event.target.files?.[0]
 
@@ -1063,6 +1141,7 @@ const isTypingTarget = (target) =>
       }
 
       setRemoteSource(null) // clear any route-provided source
+      setDownloadError('')
       setSelectedFile(file)
     }
 
@@ -1133,6 +1212,7 @@ const isTypingTarget = (target) =>
               // Clearing here rather than in the effect lets a failed load be
               // retried by toggling, without a setState in an effect body.
               setMeshError('')
+              setDownloadError('')
               setViewMode((mode) => (mode === 'mesh' ? 'splat' : 'mesh'))
             }}
             title={meshPath
@@ -1140,6 +1220,25 @@ const isTypingTarget = (target) =>
               : 'Only available for a splat opened from the library, not a local upload'}
           >
             {viewMode === 'mesh' ? 'Show splat' : 'Show mesh'}
+          </button>
+
+          {/* Next to the mesh toggle on purpose: the toggle decides what you
+              are looking at, and this saves exactly that. */}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={!downloadTarget || downloading}
+            onClick={handleDownload}
+            title={downloadTarget
+              ? `Download ${downloadTarget.name}`
+              : 'Nothing loaded to download yet'}
+          >
+            <IconDownload />
+            {downloading
+              ? 'Preparing…'
+              : showingMesh
+                ? 'Download mesh'
+                : 'Download splat'}
           </button>
 
           <button
@@ -1184,16 +1283,25 @@ const isTypingTarget = (target) =>
         >
           <div className="gv-stage-panel" aria-label="Spark splat preview" onWheel={handleScroll}>
             <div className="gv-stage" ref={stageRef} />
-            {error && !meshAlert ? <div className="gv-stage-alert">{error}</div> : null}
-            {/* One alert slot, so the three claimants are ordered explicitly.
-                Mesh state wins while the switch is on it — the splat's own
-                error is not what you are looking at, and suppressing this left
-                a mesh switch with no feedback at all. */}
-            {meshAlert ? (
+            {/* One alert slot, so the claimants are ordered explicitly. A
+                download failure outranks the rest: it is the only one that
+                answers a button the user just pressed. Mesh state then wins
+                while the switch is on it — the splat's own error is not what
+                you are looking at, and suppressing this left a mesh switch
+                with no feedback at all. */}
+            {downloadError ? (
+              <div className="gv-stage-alert">{downloadError}</div>
+            ) : null}
+
+            {error && !meshAlert && !downloadError ? (
+              <div className="gv-stage-alert">{error}</div>
+            ) : null}
+
+            {meshAlert && !downloadError ? (
               <div className="gv-stage-alert gv-stage-alert--info">{meshAlert}</div>
             ) : null}
 
-            {buildingsOn && buildingsInfo && !error && !meshAlert ? (
+            {buildingsOn && buildingsInfo && !error && !meshAlert && !downloadError ? (
               <div className="gv-stage-alert gv-stage-alert--info">
                 {buildingsInfo.kind === 'ready'
                   ? [

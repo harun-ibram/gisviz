@@ -268,7 +268,7 @@ function Upload() {
         // Both types now need an outline, so regions no longer bypass the check.
         : Boolean(newName.trim()) && newPolygon.length >= 3
 
-    // The client gate is UX, not security â€” the three POSTs below are still
+    // The client gate is UX, not security the three POSTs below are still
     // rejected by the backend without a token.
     const canProcess = targetReady && files.length > 0 && !running && isAuthed
 
@@ -318,7 +318,7 @@ function Upload() {
         // A token that expired mid-session should open the login popup rather
         // than surface as a raw error string.
         // Async so it can read `detail`. The server sends actionable validation
-        // messages ("that outline is not a usable areaâ€¦"); without this they are
+        // messages ("that outline is not a usable area"); without this they are
         // all replaced by a bare "Unable to create node (400)".
         const checkWrite = async (response, message) => {
             if (response.status === 401) {
@@ -338,7 +338,7 @@ function Upload() {
             let name = items.find((item) => item.id === selectedId)?.name ?? ''
 
             if (mode === 'new') {
-                setStatus(`Creating ${targetType}â€¦`)
+                setStatus(`Creating ${targetType}`)
                 name = newName.trim()
 
                 // One shape for both types now. The server closes the ring,
@@ -359,7 +359,7 @@ function Upload() {
                 type = targetType
             }
 
-            setStatus('Creating jobâ€¦')
+            setStatus('Creating job…')
 
             const jobResponse = await fetch(`${apiBaseUrl}/jobs`, {
                 method: 'POST',

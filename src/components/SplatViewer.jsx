@@ -64,6 +64,42 @@ const meshPathFor = (modelPath) => {
     : `${modelPath}.glb`
 }
 
+/**
+ * Undo the glTF default material on a loaded mesh.
+ *
+ * GS2Mesh's TSDF stage produces a vertex-coloured PLY, and the worker exports
+ * it with trimesh — which, for a mesh whose colour lives in COLOR_0, writes a
+ * primitive with no `material` at all. A primitive without one takes the glTF
+ * *default* material, and that default is `metallicFactor: 1`: a fully metallic
+ * surface, which by definition has no diffuse response and shows only what it
+ * reflects. This scene has no environment map, so there was nothing to reflect
+ * but the lamps, and the mesh rendered as a dark tinted shell instead of the
+ * photographed colour it carries. Other viewers do not show this because they
+ * ship a default studio IBL for a metal to reflect; we do not, and adding one
+ * to light a mesh whose colour is already baked would be the wrong fix.
+ *
+ * SuGaR's meshes land in the same place by a different route: they go out as
+ * .obj/.mtl, so they do carry a material, but an .mtl cannot express metalness
+ * and the converted material omits the factor — which glTF resolves to the same
+ * 1.0. Both workers now write it explicitly, so this is belt-and-braces for
+ * meshes produced before that; it is cheap and it costs nothing to keep.
+ *
+ * Force the one thing these files failed to say: this is a diffuse surface.
+ * Roughness is left alone — that one they do get right.
+ */
+const relightAsDiffuse = (root) => {
+  root.traverse((child) => {
+    const material = child.material
+    if (!material) return
+    const materials = Array.isArray(material) ? material : [material]
+    materials.forEach((entry) => {
+      if (!('metalness' in entry)) return // not a PBR material; nothing to undo
+      entry.metalness = 0
+      entry.needsUpdate = true
+    })
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Buildings (Phase 4a)
 //
@@ -419,13 +455,20 @@ const isTypingTarget = (target) =>
       const spark = new SparkRenderer({ renderer })
       scene.add(spark)
 
+      // Every light in here is white on purpose. There used to be an orange
+      // `PointLight(0xff8f42, 18, 14)` sitting a couple of units off the origin
+      // as a rim accent, from when the stage held nothing but a splat — and
+      // splats are unlit, so it was decoration that lit nothing. A
+      // reconstructed mesh *does* take lights, at exactly that scale, and it
+      // arrived carrying colour photographed under the real scene's lighting.
+      // A coloured lamp on top of that is a second lighting pass the capture
+      // never had: it is what made meshes here look brown when the same file
+      // opens neutral everywhere else.
       const ambientLight = new THREE.AmbientLight(0xffffff, 1.25)
       const keyLight = new THREE.DirectionalLight(0xffffff, 2.6)
       keyLight.position.set(2.5, 2.5, 4)
-      const rimLight = new THREE.PointLight(0xff8f42, 18, 14)
-      rimLight.position.set(-2.8, -1.4, 3.2)
 
-      scene.add(ambientLight, keyLight, rimLight)
+      scene.add(ambientLight, keyLight)
 
       const resizeRenderer = () => {
         const { clientWidth, clientHeight } = stage
@@ -765,11 +808,15 @@ const isTypingTarget = (target) =>
     /**
      * Point the camera at an object's bounding box.
      *
-     * The .glb is loaded at its own coordinates rather than being forced onto
-     * the splat's hand-tuned transform: the two come out of different exporters
-     * and a mesh is usually already Y-up, so reusing the splat's `rotation.x =
-     * PI` would land it upside down. Framing the camera instead means whatever
-     * the file's conventions are, something sensible is on screen.
+     * Framing is all this does. It used to double as the mesh's only
+     * orientation handling, on the reasoning that a .glb "is usually already
+     * Y-up" and would land upside down if given the splat's `rotation.x = PI` —
+     * but these two files are not independent exports that happen to sit side
+     * by side. Both are reconstructions of the same capture in the same COLMAP
+     * frame, where +Y points down, which is the whole reason the splat needs
+     * that 180° roll. The mesh needs it for identical reasons, and skipping it
+     * is what put meshes on screen upside down. Orientation now comes from the
+     * shared `rotation` state for both; see the effect that applies it.
      */
     const frameObject = (object) => {
       const camera = cameraRef.current
@@ -870,6 +917,16 @@ const isTypingTarget = (target) =>
         .then((gltf) => {
           const scene = sceneRef.current
           if (!active || !scene) return
+
+          // Both before frameObject: the rotation because a Box3 is computed
+          // in world space and framing the unrotated pose would aim the camera
+          // at where the mesh used to be, the materials because a mesh added to
+          // the scene is one frame away from being drawn.
+          const angles = rotationRef.current
+          gltf.scene.rotation.set(
+            toRadians(angles.x), toRadians(angles.y), toRadians(angles.z),
+          )
+          relightAsDiffuse(gltf.scene)
 
           scene.add(gltf.scene)
           meshRef.current = gltf.scene

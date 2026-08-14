@@ -5,6 +5,13 @@ import { useAuth } from './useAuth.js'
 import { makeGisApi } from '../gis/gisApi.js'
 import { FALLBACK_GIS_CONFIG, serializeOptions } from '../gis/gisConfig.js'
 import { isTerminal } from '../gis/gisErrors.js'
+import {
+    defaultGroupName,
+    loadGroups,
+    makeGroupId,
+    saveGroups,
+    withoutLayers,
+} from '../gis/gisGroups.js'
 import { uploadGisFiles } from '../gis/uploadGisFiles.js'
 
 const CONFIG_CACHE_KEY = 'gisviz:gis-config:v1'
@@ -149,6 +156,10 @@ export function GisLibraryProvider({ children }) {
     const [selectedLayerId, setSelectedLayerId] = useState(null)
     const [visibleLayerIds, setVisibleLayerIds] = useState([])
     const [opacityByLayer, setOpacityByLayer] = useState({})
+
+    // Client-side only — see gisGroups.js. Read once at mount, mirrored back to
+    // localStorage on every change.
+    const [layerGroups, setLayerGroups] = useState(loadGroups)
 
     const [basemap, setBasemap] = useState('dark')
     const [userMoved, setUserMoved] = useState(false)
@@ -452,6 +463,10 @@ export function GisLibraryProvider({ children }) {
         setVisibleLayerIds((current) => current.filter((id) => id !== layerId))
         setSelectedLayerId((current) => (current === layerId ? null : current))
         setLayersTotal((current) => Math.max(0, current - 1))
+
+        // Deleting the last member deletes the group with it — an empty group
+        // is only a row that can never be toggled.
+        setLayerGroups((current) => withoutLayers(current, [layerId]))
     }, [api])
 
     /* — map state — */
@@ -506,9 +521,158 @@ export function GisLibraryProvider({ children }) {
         })
     }, [])
 
+    /**
+     * One state update for the whole set, so toggling a twelve-layer group is a
+     * single render rather than twelve.
+     */
+    const setLayersVisibility = useCallback((layerIds, visible) => {
+        setVisibleLayerIds((current) => {
+            if (visible) {
+                const seen = new Set(current)
+                const added = layerIds.filter((id) => !seen.has(id))
+
+                return added.length === 0 ? current : [...current, ...added]
+            }
+
+            const drop = new Set(layerIds)
+            const next = current.filter((id) => !drop.has(id))
+
+            return next.length === current.length ? current : next
+        })
+    }, [])
+
     const setLayerOpacity = useCallback((layerId, opacity) => {
         setOpacityByLayer((current) => ({ ...current, [layerId]: opacity }))
     }, [])
+
+    /* — layer groups — */
+
+    useEffect(() => {
+        saveGroups(layerGroups)
+    }, [layerGroups])
+
+    const groupOfLayer = useMemo(() => {
+        const byLayer = new Map()
+
+        for (const group of layerGroups) {
+            for (const layerId of group.layer_ids) {
+                byLayer.set(layerId, group)
+            }
+        }
+
+        return byLayer
+    }, [layerGroups])
+
+    /** Membership is exclusive, so the ids are pulled out of any group they were in. */
+    const createLayerGroup = useCallback((name, layerIds) => {
+        const members = [...new Set(layerIds)].filter(Boolean)
+
+        if (members.length === 0) {
+            return null
+        }
+
+        const group = {
+            group_id: makeGroupId(),
+            name: name?.trim() || '',
+            layer_ids: members,
+            collapsed: false,
+        }
+
+        setLayerGroups((current) => {
+            const kept = withoutLayers(current, members)
+            return [...kept, { ...group, name: group.name || defaultGroupName(kept) }]
+        })
+
+        return group.group_id
+    }, [])
+
+    const addLayersToGroup = useCallback((groupId, layerIds) => {
+        const members = [...new Set(layerIds)].filter(Boolean)
+
+        if (members.length === 0) {
+            return
+        }
+
+        setLayerGroups((current) => {
+            // Remove first, so moving a layer between groups cannot leave it in
+            // both — and so the target group keeps its position in the list.
+            const kept = withoutLayers(current, members)
+            const target = kept.find((group) => group.group_id === groupId)
+
+            if (!target) {
+                const source = current.find((group) => group.group_id === groupId)
+
+                // The target's own layers were just stripped out of it: rebuild
+                // it from its previous membership plus the new ids.
+                return source
+                    ? [...kept, { ...source, layer_ids: [...new Set([...source.layer_ids, ...members])] }]
+                    : current
+            }
+
+            return kept.map((group) => (group.group_id === groupId
+                ? { ...group, layer_ids: [...new Set([...group.layer_ids, ...members])] }
+                : group))
+        })
+    }, [])
+
+    const removeLayersFromGroup = useCallback((layerIds) => {
+        setLayerGroups((current) => withoutLayers(current, layerIds))
+    }, [])
+
+    const renameLayerGroup = useCallback((groupId, name) => {
+        const trimmed = name?.trim()
+
+        if (!trimmed) {
+            return
+        }
+
+        setLayerGroups((current) => current.map((group) => (group.group_id === groupId
+            ? { ...group, name: trimmed }
+            : group)))
+    }, [])
+
+    const setGroupCollapsed = useCallback((groupId, collapsed) => {
+        setLayerGroups((current) => current.map((group) => (group.group_id === groupId
+            ? { ...group, collapsed }
+            : group)))
+    }, [])
+
+    /** Ungroup keeps every layer — only the grouping disappears. */
+    const deleteLayerGroup = useCallback((groupId) => {
+        setLayerGroups((current) => current.filter((group) => group.group_id !== groupId))
+    }, [])
+
+    const toggleGroupVisibility = useCallback((groupId, visible) => {
+        const group = layerGroups.find((entry) => entry.group_id === groupId)
+
+        if (!group) {
+            return
+        }
+
+        // Undefined means "flip it": a partially shown group turns fully on,
+        // which is the less destructive of the two readings.
+        const next = visible ?? !group.layer_ids.every((id) => visibleLayerIds.includes(id))
+
+        setLayersVisibility(group.layer_ids, next)
+    }, [layerGroups, visibleLayerIds, setLayersVisibility])
+
+    const setGroupOpacity = useCallback((groupId, opacity) => {
+        const group = layerGroups.find((entry) => entry.group_id === groupId)
+
+        if (!group) {
+            return
+        }
+
+        setOpacityByLayer((current) => {
+            const next = { ...current }
+
+            for (const layerId of group.layer_ids) {
+                next[layerId] = opacity
+            }
+
+            return next
+        })
+    }, [layerGroups])
 
     const firstFitDoneRef = useRef(false)
 
@@ -807,8 +971,20 @@ export function GisLibraryProvider({ children }) {
         setSelectedLayerId,
         visibleLayerIds,
         toggleLayerVisibility,
+        setLayersVisibility,
         opacityByLayer,
         setLayerOpacity,
+
+        layerGroups,
+        groupOfLayer,
+        createLayerGroup,
+        addLayersToGroup,
+        removeLayersFromGroup,
+        renameLayerGroup,
+        deleteLayerGroup,
+        setGroupCollapsed,
+        toggleGroupVisibility,
+        setGroupOpacity,
 
         basemap,
         setBasemap,
@@ -836,7 +1012,10 @@ export function GisLibraryProvider({ children }) {
         jobs, activeJob, activeJobId, pendingCount, queueFull,
         submitGisJob, retryJob, startExistingJob, abortJob, dismissJob, hasRetainedFiles,
         layers, layersLoading, layersError, layersTotal, refreshLayers, ingestLayers, deleteLayer,
-        selectedLayerId, visibleLayerIds, toggleLayerVisibility, opacityByLayer, setLayerOpacity,
+        selectedLayerId, visibleLayerIds, toggleLayerVisibility, setLayersVisibility,
+        opacityByLayer, setLayerOpacity,
+        layerGroups, groupOfLayer, createLayerGroup, addLayersToGroup, removeLayersFromGroup,
+        renameLayerGroup, deleteLayerGroup, setGroupCollapsed, toggleGroupVisibility, setGroupOpacity,
         basemap, userMoved, viewBbox, fitRequest, requestFit, fitSuggestion, acceptFitSuggestion,
         featureFocus, jobPrefill, requestJobPrefill, bboxPreview,
         getFreshAssetUrl, urlsByKey,

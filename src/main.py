@@ -118,8 +118,16 @@ def _mesh_fields(mesh_path: str | None) -> dict[str, Any]:
 
 
 @app.get("/splat-url")
-async def get_splat_url(path: str = Query(...)):
-    return {"url": get_signed_url(path), "filename": path.split("/")[-1]}
+async def get_splat_url(path: str = Query(...), download: bool = False):
+    # `download=true` is what the viewer's download button asks for: the same
+    # object, signed so R2 returns it as an attachment. The viewer's *loading*
+    # path deliberately does not set it — that URL is fetched by JS, and a
+    # Content-Disposition on it would do nothing but confuse the cache.
+    filename = path.split("/")[-1]
+    return {
+        "url": get_signed_url(path, download_as=filename if download else None),
+        "filename": filename,
+    }
 
 # API endpoints
 # Both geometry columns are rendered as GeoJSON. `footprint` must be selected

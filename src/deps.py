@@ -37,10 +37,29 @@ r2_client = boto3.client(
 BUCKET = os.environ["R2_BUCKET_NAME"]
 
 
-def get_signed_url(path: str, expires_in: int = 3600) -> str:
+def get_signed_url(
+    path: str, expires_in: int = 3600, download_as: str | None = None
+) -> str:
+    """
+    Presigned GET URL for an object.
+
+    `download_as` overrides the response's Content-Disposition so the browser
+    saves the object under that name instead of trying to display it. It has to
+    be signed in — the header is part of the signature, so a client cannot bolt
+    it onto a plain URL afterwards, and the `download` attribute on an anchor is
+    ignored cross-origin. Without it a viewer downloading a splat would get
+    whatever filename R2 infers from the key, or an inline render.
+    """
+    params: dict[str, str] = {"Bucket": BUCKET, "Key": path}
+    if download_as:
+        # Quotes escaped rather than the name rejected: an odd filename is not
+        # worth failing a download over, and an unescaped `"` would truncate
+        # the header value.
+        safe = download_as.replace("\\", "").replace('"', "")
+        params["ResponseContentDisposition"] = f'attachment; filename="{safe}"'
     return r2_client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": BUCKET, "Key": path},
+        Params=params,
         ExpiresIn=expires_in,
     )
 

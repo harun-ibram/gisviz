@@ -180,6 +180,11 @@ function SplatMap({ className = '' }) {
       }`)
     }
 
+    // Why a splat that should have a height does not have one. This is the line
+    // that used to be missing entirely, and its absence is what made a failed
+    // measurement indistinguishable from one that was never attempted.
+    if (buildings.outlineNote) lines.push(buildings.outlineNote)
+
     if (buildings.geotiffNote) lines.push(buildings.geotiffNote)
 
     return lines

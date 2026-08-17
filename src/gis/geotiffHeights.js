@@ -113,15 +113,34 @@ function percentile(sorted, fraction) {
 }
 
 /**
- * The newest usable DSM and DEM among GeoTIFF raster layers.
+ * The surface to measure against, and the ground to measure it from.
  *
- * `kind: 'raster'` is excluded on purpose: that option means "generic values",
- * so the numbers in it are explicitly not elevations and extruding a building
- * by one would invent a measurement.
+ * Modelled directly on `gis_worker._surfaces`, which is the LiDAR half of this.
+ * The asymmetry it has to absorb is that a LiDAR job produces **both** metric
+ * surfaces from one tile — `native_dem.tif` and `native_dsm.tif` — so that path
+ * always has a DSM to work with, while a TIFF job produces exactly one raster
+ * carrying exactly one `kind`, and `gisConfig.js` defaults that kind to `dem`.
+ *
+ * Requiring a DSM here therefore found nothing at all for the ordinary case of
+ * one uploaded GeoTIFF left on its default. So the rule mirrors `_surfaces`'s
+ * own fallback ("the surface the user asked for is under its generic name"):
+ * take the best surface available and say which one it was, rather than
+ * refusing to measure because it is not labelled the way LiDAR labels things.
+ *
+ *   dsm + dem  ->  the LiDAR pairing exactly: roof off the DSM, ground off the DEM
+ *   dsm only   ->  ground from the ring of the surface itself
+ *   dem only   ->  same, and on a true bare-earth grid every building measures
+ *                  ~0 m, which is the honest answer for a raster with no
+ *                  buildings in it
+ *   raster     ->  last resort, generic values; named in the caption so a
+ *                  nonsense height is traceable to the layer that produced it
+ *
+ * `layer_type` is not filtered on: a LiDAR-derived raster is a perfectly good
+ * surface, and reading it here is what covers "LiDAR uploaded but no OSM
+ * extract yet", where the backend never wrote a `public.buildings` row.
  */
 export function pickElevationLayers(layers) {
   const usable = (layers ?? []).filter((layer) => layer?.geometry_class === 'raster'
-    && layer.layer_type === 'tiff'
     && layer.geotiff_url
     && Array.isArray(layer.bounds)
     && layer.bounds.length === 4)
@@ -130,7 +149,17 @@ export function pickElevationLayers(layers) {
     .filter((layer) => layer.kind === kind)
     .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))[0] ?? null
 
-  return { dsm: newest('dsm'), dem: newest('dem') }
+  const dsm = newest('dsm')
+  const dem = newest('dem')
+  const generic = newest('raster') ?? usable.find((layer) => !layer.kind) ?? null
+
+  const surface = dsm ?? dem ?? generic
+  if (!surface) return { surface: null, ground: null, paired: false }
+
+  // Only a real DSM/DEM pair is a pairing. A DEM used as the surface must not
+  // then also be its own ground — that is 0 m everywhere by construction.
+  const ground = surface === dsm ? dem : null
+  return { surface, ground, paired: Boolean(ground) }
 }
 
 /**
@@ -751,15 +780,29 @@ export async function fillHeightsFromGeotiff(features, {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
     const layers = (await response.json()).layers ?? []
-    const { dsm, dem } = pickElevationLayers(layers)
-    if (!dsm) return idle
+    const { surface, ground } = pickElevationLayers(layers)
 
-    const grid = await openGrid(dsm)
+    // Every exit from here on carries a note. Silence was the whole problem:
+    // an unlabelled raster, a bbox that missed, a grid too fine to window all
+    // looked identical from the outside — nothing drawn, nothing said.
+    if (!surface) {
+      const rasters = layers.filter((layer) => layer?.geometry_class === 'raster').length
+      return {
+        ...idle,
+        note: rasters > 0
+          ? 'no usable elevation raster here — the GeoTIFF layers over this area carry no downloadable grid.'
+          : 'no elevation layer covers this area — upload a GeoTIFF surface on the GIS page.',
+      }
+    }
+
+    const grid = await openGrid(surface)
     // With no area from the caller and no pending footprints to derive one
     // from, the raster's own extent is the scope — which is exactly right for
     // the 3D viewer, whose question is "what did this surface cover".
     const window = area ? intersectBbox(area, grid.bounds) : grid.bounds
-    if (!window) return idle
+    if (!window) {
+      return { ...idle, layerName: surface.name, note: `${surface.name} does not cover this area.` }
+    }
 
     // Padded so the ground ring has cells to land on; windowFor clamps back to
     // the raster, so overshooting its edge costs nothing.
@@ -769,18 +812,21 @@ export async function fillHeightsFromGeotiff(features, {
     if (!dsmTile) {
       return {
         ...idle,
-        note: `${dsm.name} is too finely gridded to sample here — zoom in for GeoTIFF heights.`,
+        layerName: surface.name,
+        note: `${surface.name} is too finely gridded to sample here — zoom in for GeoTIFF heights.`,
       }
     }
 
     let groundTile = dsmTile
 
-    if (dem) {
-      const demGrid = await openGrid(dem)
-      const demWindow = intersectBbox(window, demGrid.bounds)
-      // A DEM that fails to read is not fatal: the DSM ring still gives a
-      // ground datum, so fall through rather than losing every height.
-      if (demWindow) groundTile = (await readTile(demGrid, demWindow, signal)) ?? dsmTile
+    if (ground) {
+      const groundGrid = await openGrid(ground)
+      const groundWindow = intersectBbox(window, groundGrid.bounds)
+      // A DEM that fails to read is not fatal: the surface's own ring still
+      // gives a ground datum, so fall through rather than losing every height.
+      if (groundWindow) {
+        groundTile = (await readTile(groundGrid, padBbox(groundWindow, RING_M * 4), signal)) ?? dsmTile
+      }
     }
 
     // ---- 1. fill the footprints we were handed -----------------------------
@@ -848,7 +894,17 @@ export async function fillHeightsFromGeotiff(features, {
     }
 
     if (filled === 0 && extra.length === 0) {
-      return { ...idle, note: vectorNote, layerName: dsm.name }
+      // The surface was read and nothing came out of it. Almost always either
+      // a bare-earth grid used as the surface — where roof minus ground really
+      // is zero — or nodata over the footprints; say which layer was tried so
+      // it is actionable rather than a shrug.
+      return {
+        ...idle,
+        layerName: surface.name,
+        note: vectorNote
+          ?? `${surface.name} (${surface.kind ?? 'raster'}) covered this area but measured nothing`
+            + `${surface.kind === 'dem' ? ' — a DEM is bare earth; re-upload the GeoTIFF as a DSM to get building heights.' : '.'}`,
+      }
     }
 
     const merged = known.map((feature) => {
@@ -857,12 +913,23 @@ export async function fillHeightsFromGeotiff(features, {
       return { ...feature, properties: { ...feature.properties, ...patch } }
     })
 
+    // Measured, and every one of them came out flat. That is what a real
+    // bare-earth DEM produces — roof and ground are the same surface — and it
+    // is a success as far as the maths is concerned, so nothing else here would
+    // ever say a word about it.
+    const heights = [...patches.values(), ...extra.map((f) => f.properties)]
+      .map((properties) => properties.height_m)
+    const allFlat = heights.length > 0 && heights.every((height) => height === 0)
+
     return {
       features: [...merged, ...extra],
       filled,
       added: extra.length,
-      note: vectorNote,
-      layerName: dsm.name,
+      note: vectorNote ?? (allFlat
+        ? `${surface.name} is flat over this area — a DEM is bare earth, so re-upload the GeoTIFF as a DSM for building heights.`
+        : null),
+      layerName: surface.name,
+      surfaceKind: surface.kind ?? 'raster',
       groundFromSurface: groundTile === dsmTile,
     }
   } catch (error) {

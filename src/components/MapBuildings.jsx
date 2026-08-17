@@ -336,7 +336,7 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
    * alone also means panning and zooming cost nothing at all.
    */
   const outlineKey = outlines.map((outline) => outline.id).join(',')
-  const [measured, setMeasured] = useState({ key: null, features: [] })
+  const [measured, setMeasured] = useState({ key: null, features: [], note: null })
 
   useEffect(() => {
     if (outlines.length === 0) return undefined
@@ -347,14 +347,21 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
     fillHeightsFromGeotiff(outlines, { apiBaseUrl, signal: controller.signal, addMissing: false })
       .then((result) => {
         if (!live) return
+        const raised = result.features.filter((feature) => feature.properties?.height_m > 0)
         setMeasured({
           key: outlineKey,
-          features: result.features.filter((feature) => feature.properties?.height_m > 0),
+          features: raised,
+          // Reported even on success-with-nothing. Swallowing this is what made
+          // every failure mode look the same from the outside: an outline that
+          // could not be measured and one that was never attempted both showed
+          // as a flat patch and an empty caption.
+          note: raised.length > 0 ? null : result.note,
         })
       })
-      // An outline with no surface over it keeps the flat polygon SplatMap
-      // already draws, which is the pre-existing behaviour and a fine one.
-      .catch(() => {})
+      .catch((error) => {
+        if (!live || error?.name === 'AbortError') return
+        setMeasured({ key: outlineKey, features: [], note: error?.message ?? null })
+      })
 
     return () => {
       live = false
@@ -427,6 +434,10 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
       // is on screen is the floor rather than the measurement. The caption says
       // so; the tooltip still carries the real metres.
       exaggerated: drawn.some((body) => body.exaggerated),
+      // Why there are none, when there are targets that could have had one.
+      outlineNote: outlines.length > 0 && drawn.length === 0
+        ? (measured.key === outlineKey ? measured.note : null)
+        : null,
     }
 
     // Zoomed out past the footprint layer. The outlines are still measured and
@@ -452,7 +463,8 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
       geotiffNote: loaded.geotiff?.note ?? null,
       splats: buildings.filter((body) => body.target).length,
     })
-  }, [active, bodies, fresh, loaded.total, loaded.geotiff, onStatus, zoom])
+  }, [active, bodies, fresh, loaded.total, loaded.geotiff, measured, outlineKey,
+    outlines.length, onStatus, zoom])
 
   return bodies.map((body) => (
     <Fragment key={body.key}>

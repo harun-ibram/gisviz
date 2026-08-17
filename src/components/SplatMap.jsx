@@ -141,12 +141,16 @@ function SplatMap({ className = '' }) {
   // the count would read as though the count were in doubt.
   const buildingNotes = (() => {
     if (!buildings) return []
-    if (buildings.kind === 'zoom') return ['zoom in for building heights']
     if (buildings.kind === 'error') return [`buildings unavailable — ${buildings.message}`]
 
     const lines = []
 
-    if (buildings.shown === 0) {
+    // The footprint layer is off out here, but the drawn outlines are not —
+    // they are measured once and drawn at every zoom, so this branch still has
+    // something to report.
+    if (buildings.kind === 'zoom') {
+      lines.push('zoom in for building heights')
+    } else if (buildings.shown === 0) {
       lines.push('no buildings measured here')
     } else {
       const clipped = buildings.total > buildings.shown ? ` of ${buildings.total}` : ''
@@ -162,7 +166,9 @@ function SplatMap({ className = '' }) {
     // case this whole path exists for: without it the outline is drawn flat and
     // the caption says nothing about why.
     if (buildings.outlines > 0) {
-      lines.push(`${buildings.outlines} drawn ${buildings.outlines === 1 ? 'outline' : 'outlines'} raised to a measured height`)
+      lines.push(`${buildings.outlines} drawn ${buildings.outlines === 1 ? 'outline' : 'outlines'} raised to a measured height${
+        buildings.exaggerated ? ' · shown taller than scale at this zoom' : ''
+      }`)
     }
 
     if (buildings.geotiff > 0) {

@@ -582,6 +582,27 @@ function unionBbox(features) {
   return Number.isFinite(west) ? [west, south, east, north] : null
 }
 
+/**
+ * Grow a bbox by `metres` on every side.
+ *
+ * The read window has to cover the ground ring, not just the outlines. When the
+ * caller passes a viewport this is noise — the viewport dwarfs any footprint in
+ * it — but the drawn-outline pass derives its window from the outlines
+ * themselves, so without this the ring falls entirely outside the cells that
+ * were read, every ground sample comes back NaN, and a perfectly well covered
+ * outline reports "no elevation cover".
+ *
+ * Four ring widths rather than one: the dilation is a Chebyshev square, the
+ * window is rounded outward to whole cells, and this is a handful of cells on
+ * each edge of a read that is thousands across.
+ */
+function padBbox([west, south, east, north], metres) {
+  const lat = (south + north) / 2
+  const dLon = metres / metresPerDegreeLon(lat)
+  const dLat = metres / METRES_PER_DEGREE_LAT
+  return [west - dLon, south - dLat, east + dLon, north + dLat]
+}
+
 function intersectBbox(a, b) {
   const west = Math.max(a[0], b[0])
   const south = Math.max(a[1], b[1])
@@ -693,6 +714,12 @@ export async function fillHeightsFromGeotiff(features, {
   // it 2000 measured off the vector layer would be a stall the LiDAR path never
   // had; the 3D viewer merges into one mesh per class and takes the lot.
   limit = MAX_FEATURES,
+  // Whether to go looking for footprints the caller was not handed. Off for the
+  // caller that only wants its own geometry measured — the map asks separately
+  // for the drawn outlines, which are neither viewport-scoped nor zoom-gated,
+  // and must not come back carrying a neighbourhood's worth of buildings that
+  // would then be drawn under neither of those limits.
+  addMissing = true,
 } = {}) {
   const known = features ?? []
   const idle = {
@@ -734,7 +761,11 @@ export async function fillHeightsFromGeotiff(features, {
     const window = area ? intersectBbox(area, grid.bounds) : grid.bounds
     if (!window) return idle
 
-    const dsmTile = await readTile(grid, window, signal)
+    // Padded so the ground ring has cells to land on; windowFor clamps back to
+    // the raster, so overshooting its edge costs nothing.
+    const read = padBbox(window, RING_M * 4)
+
+    const dsmTile = await readTile(grid, read, signal)
     if (!dsmTile) {
       return {
         ...idle,
@@ -783,7 +814,7 @@ export async function fillHeightsFromGeotiff(features, {
     // layer list is not scoped to anything, so the most recent buildings layer
     // can easily be another city's — and every one of its footprints would then
     // be measured against a raster that does not cover it.
-    const source = layers.find((layer) => layer?.geometry_class === 'vector'
+    const source = addMissing && layers.find((layer) => layer?.geometry_class === 'vector'
       && layer.sublayer === 'buildings'
       && layer.geojson_url
       && Array.isArray(layer.bounds)

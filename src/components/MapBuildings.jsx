@@ -43,10 +43,18 @@ import {
  * cartoon tower, unrelated to zoom. True scale means the effect fades as you
  * zoom out, which is correct — at zoom 13 a 20 m building really is one pixel
  * tall — and MIN_ZOOM below turns the layer off before it gets there.
+ *
+ * Drawn splat outlines are the exception, on both counts. They are neither
+ * fetched nor zoom-gated: they are already in hand from the library context, a
+ * handful of shapes rather than five hundred, and each one is the subject of
+ * the map rather than context around it. "Does my splat have a height" has to
+ * be answerable at the zoom that frames the splat, which is routinely below
+ * MIN_ZOOM for anything larger than a building.
  */
 
 // Under this, a real building's offset is sub-pixel and the bbox would be
 // county-sized. Not worth a request; the caption says to zoom in instead.
+// Applies to fetched footprints only — see the header on drawn outlines.
 const MIN_ZOOM = 14
 
 // Two SVG paths per building, on a map that is a sidebar panel.
@@ -56,6 +64,16 @@ const MAX_BUILDINGS = 500
 // 220px map, leaving walls with no visible top. Clamping distorts the tallest
 // few; letting them escape the viewport loses them entirely.
 const MAX_OFFSET_PX = 90
+
+// Floor on a drawn outline's lift, in pixels.
+//
+// Deliberately not the constant multiplier the header warns about: that scaled
+// every building and destroyed the comparison between them. This is a floor on
+// a handful of annotations, so wherever true scale is legible it is what you
+// see, and only where the honest offset would round to nothing does the shape
+// still say "this was measured". The tooltip always carries the real metres,
+// and below the floor the roof is dashed to mark the exaggeration.
+const MIN_DRAWN_OFFSET_PX = 7
 
 // A drag fires moveend once, but a wheel zoom fires a burst of them.
 const DEBOUNCE_MS = 300
@@ -151,14 +169,28 @@ function toBody(feature, ring, key, map, zoom, breaks, targets) {
     measured: typeof height === 'number' && height > 0,
     roof: basePositions,
     walls: [],
+    exaggerated: false,
   }
 
   if (!body.measured) return body
 
-  const offset = Math.min(metresToPixels(height, centreLat, zoom), MAX_OFFSET_PX)
-  // Under a pixel of lift is not a building you can see the height of, and the
-  // walls would be a hairline of the wrong colour along every edge.
-  if (offset < 1) return body
+  const trueOffset = metresToPixels(height, centreLat, zoom)
+  let offset = Math.min(trueOffset, MAX_OFFSET_PX)
+
+  if (body.drawn) {
+    // A drawn outline is drawn at whatever zoom frames the splat, which for
+    // anything bigger than a house is well below the zoom that makes true
+    // scale legible. Lifting it to the floor is the difference between "this
+    // splat is 14 m tall" and a flat patch that says nothing.
+    if (offset < MIN_DRAWN_OFFSET_PX) {
+      offset = MIN_DRAWN_OFFSET_PX
+      body.exaggerated = true
+    }
+  } else if (offset < 1) {
+    // Under a pixel of lift is not a building you can see the height of, and
+    // the walls would be a hairline of the wrong colour along every edge.
+    return body
+  }
 
   const roof = base.map((point) => ({ x: point.x, y: point.y - offset }))
   body.roof = unproject(roof)
@@ -234,10 +266,9 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
   const active = Boolean(bboxKey) && zoom >= MIN_ZOOM
 
   useEffect(() => {
-    if (!active) {
-      onStatus(zoom < MIN_ZOOM ? { kind: 'zoom' } : null)
-      return undefined
-    }
+    // Status is reported from one place below, which is the only place that can
+    // see the drawn outlines as well as the fetch.
+    if (!active) return undefined
 
     const controller = new AbortController()
     const url = `${apiBaseUrl}/gis/buildings?bbox=${bboxKey}&limit=${MAX_BUILDINGS}`
@@ -263,7 +294,7 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
         // hands out a fresh array on every moveend, so depending on it would
         // re-fetch after a pan too small to change the rounded key.
         const bounds = bboxKey.split(',').map(Number)
-        const filled = await fillHeightsFromGeotiff([...found, ...outlines], {
+        const filled = await fillHeightsFromGeotiff(found, {
           apiBaseUrl,
           bbox: bounds,
           signal: controller.signal,
@@ -275,9 +306,8 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
           key: bboxKey,
           features: filled.features,
           // The endpoint's own total says nothing about footprints it never
-          // had a row for, and "312 of 40" in the caption reads as a bug. Drawn
-          // outlines are counted separately and stay out of it.
-          total: Math.max(total, filled.features.filter((f) => !f.properties?.gv_drawn).length),
+          // had a row for, and "312 of 40" in the caption reads as a bug.
+          total: Math.max(total, filled.features.length),
           geotiff: filled,
         })
       } catch (cause) {
@@ -293,12 +323,62 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
       live = false
       controller.abort()
     }
-  }, [active, apiBaseUrl, bboxKey, outlines, zoom, onStatus])
+  }, [active, apiBaseUrl, bboxKey, zoom, onStatus])
+
+  /**
+   * The drawn outlines, measured once — not per viewport, and not zoom-gated.
+   *
+   * Deliberately its own effect rather than a branch of the fetch above. That
+   * one exists to ask the server what is inside the current view, which is why
+   * it is debounced, bbox-keyed and switched off below MIN_ZOOM. None of that
+   * applies here: the outlines are already in hand, there are a handful of
+   * them, and they are the reason the map is on screen. Keying on `outlines`
+   * alone also means panning and zooming cost nothing at all.
+   */
+  const outlineKey = outlines.map((outline) => outline.id).join(',')
+  const [measured, setMeasured] = useState({ key: null, features: [] })
+
+  useEffect(() => {
+    if (outlines.length === 0) return undefined
+
+    const controller = new AbortController()
+    let live = true
+
+    fillHeightsFromGeotiff(outlines, { apiBaseUrl, signal: controller.signal, addMissing: false })
+      .then((result) => {
+        if (!live) return
+        setMeasured({
+          key: outlineKey,
+          features: result.features.filter((feature) => feature.properties?.height_m > 0),
+        })
+      })
+      // An outline with no surface over it keeps the flat polygon SplatMap
+      // already draws, which is the pre-existing behaviour and a fine one.
+      .catch(() => {})
+
+    return () => {
+      live = false
+      controller.abort()
+    }
+  }, [apiBaseUrl, outlineKey, outlines])
+
+  // Keyed rather than cleared in the effect: a stale measurement from the
+  // previous set of targets must not be drawn, and clearing it with a setState
+  // in an effect is a cascading render for a value that is derivable. Memoised
+  // because the mismatch branch would otherwise hand out a fresh [] every
+  // render and bust the geometry memo below.
+  const measuredOutlines = useMemo(
+    () => (measured.key === outlineKey ? measured.features : []),
+    [measured, outlineKey],
+  )
 
   const features = loaded.features
 
   const bodies = useMemo(() => {
-    if (!active || features.length === 0) return []
+    // `active` gates the fetched footprints only. A measured outline is drawn
+    // at any zoom — see the header.
+    const visible = active ? features : []
+    if (visible.length === 0 && measuredOutlines.length === 0) return []
 
     // Breaks over this viewport, matching the viewer's own quartiles over its
     // own set. Both are data-driven, so the same building can change class as
@@ -308,19 +388,12 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
     // Drawn outlines are excluded, exactly as they are in the viewer's own
     // quartiles: one region can enclose a whole district, and letting its
     // volume into the breaks would push every real building down a class.
-    const breaks = volumeBreaks(features
-      .filter((feature) => !feature.properties?.gv_drawn)
-      .map((feature) => volumeOf(feature.properties)))
+    const breaks = volumeBreaks(visible.map((feature) => volumeOf(feature.properties)))
 
     const built = []
-    for (const feature of features) {
-      // An unmeasured outline is left to SplatMap, which already draws it as a
-      // flat clickable polygon. Drawing it here too would only double the fill.
-      // Once it has a height there is something to add: the walls and the roof
-      // that turn that same polygon into a volume.
-      const height = feature.properties?.height_m
-      if (feature.properties?.gv_drawn && !(height > 0)) continue
-
+    // Outlines first, so the painter's sort below decides the order rather than
+    // the order they happen to be concatenated in.
+    for (const feature of [...visible, ...measuredOutlines]) {
       outerRings(feature.geometry).forEach((ring, index) => {
         const body = toBody(feature, ring, `${feature.id}-${index}`, map, zoom, breaks, targets)
         if (body) built.push(body)
@@ -332,22 +405,42 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
     // a near building's roof ends up under a far building's walls.
     built.sort((a, b) => b.north - a.north)
     return built
-  }, [active, features, map, targets, zoom])
+  }, [active, features, map, measuredOutlines, targets, zoom])
 
   // Reported from `bodies`, not from the fetch, because the splat match only
-  // exists once the geometry has been built. Gated on the loaded bbox matching
-  // the current one, or a pan would flash "no buildings measured here" between
-  // firing the request and getting it back.
+  // exists once the geometry has been built. The building half is gated on the
+  // loaded bbox matching the current one, or a pan would flash "no buildings
+  // measured here" between firing the request and getting it back.
   const fresh = active && loaded.key === bboxKey
   useEffect(() => {
-    if (!fresh) return
     // Buildings and drawn outlines are counted apart. They answer different
     // questions — "how much of this neighbourhood is measured" versus "does my
     // splat have a height" — and one number covering both answers neither.
     const buildings = bodies.filter((body) => !body.drawn)
+    const drawn = bodies.filter((body) => body.drawn)
+
+    // Only measured outlines reach `bodies` at all, so this is the count of
+    // splats that now have a volume rather than a flat patch.
+    const outlineStatus = {
+      outlines: drawn.length,
+      // The map is below the zoom where their true offset is legible, so what
+      // is on screen is the floor rather than the measurement. The caption says
+      // so; the tooltip still carries the real metres.
+      exaggerated: drawn.some((body) => body.exaggerated),
+    }
+
+    // Zoomed out past the footprint layer. The outlines are still measured and
+    // still drawn, so this is not an empty status.
+    if (!active) {
+      onStatus(zoom < MIN_ZOOM ? { kind: 'zoom', ...outlineStatus } : null)
+      return
+    }
+
+    if (!fresh) return
 
     onStatus({
       kind: 'ok',
+      ...outlineStatus,
       shown: buildings.length,
       total: loaded.total,
       measured: buildings.filter((body) => body.measured).length,
@@ -355,14 +448,11 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
       // tally: the pass measures every footprint it was handed, while these are
       // the ones that survived into geometry.
       geotiff: bodies.filter((body) => body.source === 'geotiff').length,
-      // Only measured outlines reach `bodies` at all, so this is the count of
-      // splats that now have a volume rather than a flat patch.
-      outlines: bodies.length - buildings.length,
       groundFromSurface: loaded.geotiff?.groundFromSurface ?? false,
       geotiffNote: loaded.geotiff?.note ?? null,
       splats: buildings.filter((body) => body.target).length,
     })
-  }, [bodies, fresh, loaded.total, loaded.geotiff, onStatus])
+  }, [active, bodies, fresh, loaded.total, loaded.geotiff, onStatus, zoom])
 
   return bodies.map((body) => (
     <Fragment key={body.key}>
@@ -397,6 +487,9 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
           // dense block where the neighbours are already saturated.
           color: body.target ? '#ffffff' : body.roofColour,
           weight: body.target ? 1.5 : 1,
+          // Dashed where the lift is the legibility floor rather than the true
+          // offset, so an exaggerated roof never passes for a measured one.
+          dashArray: body.exaggerated ? '5 3' : undefined,
         }}
         eventHandlers={body.target?.openable ? { click: () => onOpen?.(body.target) } : undefined}
       >
@@ -414,6 +507,7 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
               <br />
               <span className="text-muted">
                 {body.source === 'geotiff' ? 'from GeoTIFF surface' : 'from LiDAR'}
+                {body.exaggerated ? ' · not to scale at this zoom' : ''}
               </span>
             </>
           ) : null}

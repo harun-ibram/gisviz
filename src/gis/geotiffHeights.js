@@ -139,27 +139,48 @@ function percentile(sorted, fraction) {
  * surface, and reading it here is what covers "LiDAR uploaded but no OSM
  * extract yet", where the backend never wrote a `public.buildings` row.
  */
-export function pickElevationLayers(layers) {
-  const usable = (layers ?? []).filter((layer) => layer?.geometry_class === 'raster'
-    && layer.geotiff_url
-    && Array.isArray(layer.bounds)
-    && layer.bounds.length === 4)
+export function elevationRasters(layers) {
+  return (layers ?? [])
+    .filter((layer) => layer?.geometry_class === 'raster'
+      && layer.geotiff_url
+      && Array.isArray(layer.bounds)
+      && layer.bounds.length === 4)
+    .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
+}
 
-  const newest = (kind) => usable
-    .filter((layer) => layer.kind === kind)
-    .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))[0] ?? null
+/** Preference order among rasters that all cover the same thing. */
+const KIND_RANK = { dsm: 0, dem: 1, raster: 2 }
+const rankOf = (layer) => KIND_RANK[layer.kind] ?? 3
 
-  const dsm = newest('dsm')
-  const dem = newest('dem')
-  const generic = newest('raster') ?? usable.find((layer) => !layer.kind) ?? null
+/**
+ * The surface and ground to measure `box` against, from the rasters that
+ * actually cover it — or null when none of them does.
+ *
+ * Per-geometry, which is the part that was wrong before. `measure_drawn_targets`
+ * calls `_find_overlapping_lidar(_geometry_bounds(feature))` inside its loop and
+ * counts what it cannot place; picking one newest raster for a whole library
+ * instead means a splat in Poland gets measured against a DSM of Bucharest,
+ * lands outside every cell of it, and comes back unmeasured with the caption
+ * cheerfully reporting that the raster covered the area — because the *union*
+ * of every outline did intersect it, even though no single outline did.
+ */
+export function pickCovering(rasters, box) {
+  const covering = rasters.filter((layer) => intersectBbox(layer.bounds, box))
+  if (covering.length === 0) return null
 
-  const surface = dsm ?? dem ?? generic
-  if (!surface) return { surface: null, ground: null, paired: false }
+  // Kind first, recency second — `rasters` arrives newest-first and sort is
+  // stable, so an equal-kind tie keeps the newer one.
+  const byKind = [...covering].sort((a, b) => rankOf(a) - rankOf(b))
+  const surface = byKind[0]
 
-  // Only a real DSM/DEM pair is a pairing. A DEM used as the surface must not
-  // then also be its own ground — that is 0 m everywhere by construction.
-  const ground = surface === dsm ? dem : null
-  return { surface, ground, paired: Boolean(ground) }
+  // Only a real DSM/DEM pair is a pairing, and only when the DEM covers this
+  // geometry too. A DEM used as the surface must not also be its own ground —
+  // that is 0 m everywhere by construction.
+  const ground = surface.kind === 'dsm'
+    ? (byKind.find((layer) => layer.kind === 'dem') ?? null)
+    : null
+
+  return { surface, ground }
 }
 
 /**
@@ -632,6 +653,16 @@ function padBbox([west, south, east, north], metres) {
   return [west - dLon, south - dLat, east + dLon, north + dLat]
 }
 
+/** Smallest bbox containing both. */
+function unionOf(a, b) {
+  return [
+    Math.min(a[0], b[0]),
+    Math.min(a[1], b[1]),
+    Math.max(a[2], b[2]),
+    Math.max(a[3], b[3]),
+  ]
+}
+
 function intersectBbox(a, b) {
   const west = Math.max(a[0], b[0])
   const south = Math.max(a[1], b[1])
@@ -780,96 +811,155 @@ export async function fillHeightsFromGeotiff(features, {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
     const layers = (await response.json()).layers ?? []
-    const { surface, ground } = pickElevationLayers(layers)
+    const rasters = elevationRasters(layers)
 
     // Every exit from here on carries a note. Silence was the whole problem:
     // an unlabelled raster, a bbox that missed, a grid too fine to window all
     // looked identical from the outside — nothing drawn, nothing said.
-    if (!surface) {
-      const rasters = layers.filter((layer) => layer?.geometry_class === 'raster').length
+    if (rasters.length === 0) {
       return {
         ...idle,
-        note: rasters > 0
-          ? 'no usable elevation raster here — the GeoTIFF layers over this area carry no downloadable grid.'
-          : 'no elevation layer covers this area — upload a GeoTIFF surface on the GIS page.',
+        note: 'no elevation layer covers this area — upload a GeoTIFF surface on the GIS page.',
       }
     }
-
-    const grid = await openGrid(surface)
-    // With no area from the caller and no pending footprints to derive one
-    // from, the raster's own extent is the scope — which is exactly right for
-    // the 3D viewer, whose question is "what did this surface cover".
-    const window = area ? intersectBbox(area, grid.bounds) : grid.bounds
-    if (!window) {
-      return { ...idle, layerName: surface.name, note: `${surface.name} does not cover this area.` }
-    }
-
-    // Padded so the ground ring has cells to land on; windowFor clamps back to
-    // the raster, so overshooting its edge costs nothing.
-    const read = padBbox(window, RING_M * 4)
-
-    const dsmTile = await readTile(grid, read, signal)
-    if (!dsmTile) {
-      return {
-        ...idle,
-        layerName: surface.name,
-        note: `${surface.name} is too finely gridded to sample here — zoom in for GeoTIFF heights.`,
-      }
-    }
-
-    let groundTile = dsmTile
-
-    if (ground) {
-      const groundGrid = await openGrid(ground)
-      const groundWindow = intersectBbox(window, groundGrid.bounds)
-      // A DEM that fails to read is not fatal: the surface's own ring still
-      // gives a ground datum, so fall through rather than losing every height.
-      if (groundWindow) {
-        groundTile = (await readTile(groundGrid, padBbox(groundWindow, RING_M * 4), signal)) ?? dsmTile
-      }
-    }
-
-    // ---- 1. fill the footprints we were handed -----------------------------
-    const patches = new Map()
-    let filled = 0
 
     const budget = Math.min(limit, MAX_FEATURES)
 
-    for (const feature of pending.slice(0, budget)) {
-      const patch = measureFeature(feature, dsmTile, groundTile)
-      // Only a patch that actually carries a height is merged. A footprint this
-      // raster could not cover either already has the LiDAR row's own
-      // `coverage` and `footprint_area_m2`, and overwriting those with ours
-      // would replace one source's numbers with another's for no gain.
-      if (!patch || patch.height_m === null) continue
-      patches.set(feature, patch)
-      filled += 1
+    // ---- group each geometry under the raster that actually covers it -------
+    //
+    // Per feature, mirroring `measure_drawn_targets`. Grouped so a surface is
+    // opened and windowed once even when a dozen outlines sit on it, and so an
+    // outline nothing covers is counted rather than silently measured against
+    // whichever raster happened to be newest.
+    const groups = new Map()
+    let uncovered = 0
+
+    const assign = (feature) => {
+      const box = unionBbox([feature])
+      const pick = box && pickCovering(rasters, box)
+      if (!pick) {
+        uncovered += 1
+        return
+      }
+
+      const id = pick.surface.layer_id
+      const entry = groups.get(id) ?? { ...pick, features: [], box: null }
+      entry.features.push(feature)
+      entry.box = entry.box ? unionOf(entry.box, box) : box
+      groups.set(id, entry)
     }
 
-    // ---- 2. add footprints that endpoint never had -------------------------
+    for (const feature of pending.slice(0, budget)) assign(feature)
+
+    // Nothing was handed in, but there may still be footprints to go and find.
+    // Scope that to whichever surface covers the caller's area.
+    if (addMissing && groups.size === 0 && area) {
+      const pick = pickCovering(rasters, area)
+      if (pick) {
+        groups.set(pick.surface.layer_id, {
+          ...pick,
+          features: [],
+          box: intersectBbox(area, pick.surface.bounds),
+        })
+      }
+    }
+
+    if (groups.size === 0) {
+      const names = rasters.slice(0, 2).map((layer) => layer.name).join(', ')
+      return {
+        ...idle,
+        uncovered,
+        note: uncovered > 0
+          ? `${uncovered} outline${uncovered === 1 ? ' sits' : 's sit'} outside every uploaded surface (${names}) — the GeoTIFF has to cover the splat itself.`
+          : `${names} does not cover this area.`,
+      }
+    }
+
+    // ---- measure each group against its own surface --------------------------
+    const patches = new Map()
+    const extra = []
+    const notes = []
+    const usedNames = []
+    let filled = 0
+    let groundFromSurface = false
+
     const seen = new Set()
     for (const feature of known) {
       const key = footprintKey(feature)
       if (key) seen.add(key)
     }
 
-    const extra = []
-    let vectorNote = null
+    for (const group of groups.values()) {
+      const { surface, ground, box } = group
+      if (!box) continue
 
-    // Overlapping the surface, not merely newest. Without a caller bbox the
-    // layer list is not scoped to anything, so the most recent buildings layer
-    // can easily be another city's — and every one of its footprints would then
-    // be measured against a raster that does not cover it.
-    const source = addMissing && layers.find((layer) => layer?.geometry_class === 'vector'
-      && layer.sublayer === 'buildings'
-      && layer.geojson_url
-      && Array.isArray(layer.bounds)
-      && intersectBbox(layer.bounds, window))
+      const grid = await openGrid(surface)
+      const window = intersectBbox(box, grid.bounds)
+      if (!window) continue
 
-    if (source && (source.feature_count ?? 0) > MAX_VECTOR_FEATURES) {
-      vectorNote = `${source.name} has too many features to sample in the browser.`
-    } else if (source) {
-      const room = Math.max(0, budget - known.length)
+      // Padded so the ground ring has cells to land on; windowFor clamps back
+      // to the raster, so overshooting its edge costs nothing.
+      const dsmTile = await readTile(grid, padBbox(window, RING_M * 4), signal)
+      if (!dsmTile) {
+        notes.push(`${surface.name} is too finely gridded to sample here — zoom in for GeoTIFF heights.`)
+        continue
+      }
+
+      usedNames.push(surface.name)
+      let groundTile = dsmTile
+
+      if (ground) {
+        const groundGrid = await openGrid(ground)
+        const groundWindow = intersectBbox(window, groundGrid.bounds)
+        // A DEM that fails to read is not fatal: the surface's own ring still
+        // gives a ground datum, so fall through rather than losing every height.
+        if (groundWindow) {
+          groundTile = (await readTile(groundGrid, padBbox(groundWindow, RING_M * 4), signal)) ?? dsmTile
+        }
+      }
+
+      if (groundTile === dsmTile) groundFromSurface = true
+
+      // ---- 1. fill the geometries this surface covers ------------------------
+      let measuredHere = 0
+
+      for (const feature of group.features) {
+        const patch = measureFeature(feature, dsmTile, groundTile)
+        // Only a patch that actually carries a height is merged. A footprint
+        // this raster could not cover either already has the LiDAR row's own
+        // `coverage` and `footprint_area_m2`, and overwriting those with ours
+        // would replace one source's numbers with another's for no gain.
+        if (!patch || patch.height_m === null) continue
+        patches.set(feature, patch)
+        filled += 1
+        measuredHere += 1
+      }
+
+      if (group.features.length > 0 && measuredHere === 0) {
+        notes.push(`${surface.name} (${surface.kind ?? 'raster'}) covers these outlines but measured nothing`
+          + `${surface.kind === 'dem' ? ' — a DEM is bare earth; re-upload the GeoTIFF as a DSM to get building heights.' : ' — the cells under them carry no data.'}`)
+      }
+
+      // ---- 2. add footprints `/gis/buildings` never had ----------------------
+      if (!addMissing) continue
+
+      // Overlapping this surface, not merely newest: without a caller bbox the
+      // layer list is not scoped to anything, so the most recent buildings
+      // layer can easily be another city's.
+      const source = layers.find((layer) => layer?.geometry_class === 'vector'
+        && layer.sublayer === 'buildings'
+        && layer.geojson_url
+        && Array.isArray(layer.bounds)
+        && intersectBbox(layer.bounds, window))
+
+      if (!source) continue
+
+      if ((source.feature_count ?? 0) > MAX_VECTOR_FEATURES) {
+        notes.push(`${source.name} has too many features to sample in the browser.`)
+        continue
+      }
+
+      const room = Math.max(0, budget - known.length - extra.length)
 
       for (const feature of await loadFootprints(source, signal)) {
         if (extra.length >= room) break
@@ -893,18 +983,8 @@ export async function fillHeightsFromGeotiff(features, {
       }
     }
 
-    if (filled === 0 && extra.length === 0) {
-      // The surface was read and nothing came out of it. Almost always either
-      // a bare-earth grid used as the surface — where roof minus ground really
-      // is zero — or nodata over the footprints; say which layer was tried so
-      // it is actionable rather than a shrug.
-      return {
-        ...idle,
-        layerName: surface.name,
-        note: vectorNote
-          ?? `${surface.name} (${surface.kind ?? 'raster'}) covered this area but measured nothing`
-            + `${surface.kind === 'dem' ? ' — a DEM is bare earth; re-upload the GeoTIFF as a DSM to get building heights.' : '.'}`,
-      }
+    if (uncovered > 0) {
+      notes.push(`${uncovered} outline${uncovered === 1 ? ' sits' : 's sit'} outside every uploaded surface`)
     }
 
     const merged = known.map((feature) => {
@@ -919,18 +999,19 @@ export async function fillHeightsFromGeotiff(features, {
     // ever say a word about it.
     const heights = [...patches.values(), ...extra.map((f) => f.properties)]
       .map((properties) => properties.height_m)
-    const allFlat = heights.length > 0 && heights.every((height) => height === 0)
+
+    if (heights.length > 0 && heights.every((height) => height === 0)) {
+      notes.push(`${usedNames.join(', ')} is flat over this area — a DEM is bare earth, so re-upload the GeoTIFF as a DSM for building heights.`)
+    }
 
     return {
       features: [...merged, ...extra],
       filled,
       added: extra.length,
-      note: vectorNote ?? (allFlat
-        ? `${surface.name} is flat over this area — a DEM is bare earth, so re-upload the GeoTIFF as a DSM for building heights.`
-        : null),
-      layerName: surface.name,
-      surfaceKind: surface.kind ?? 'raster',
-      groundFromSurface: groundTile === dsmTile,
+      uncovered,
+      note: notes.length > 0 ? notes.join(' · ') : null,
+      layerName: usedNames.join(', ') || null,
+      groundFromSurface,
     }
   } catch (error) {
     if (error?.name === 'AbortError') throw error

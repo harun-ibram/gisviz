@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import L from 'leaflet'
 import {
   CircleMarker,
   MapContainer,
@@ -6,12 +7,15 @@ import {
   Polygon,
   Polyline,
   TileLayer,
+  useMap,
   useMapEvents,
 } from 'react-leaflet'
 import { BASEMAPS, DEFAULT_CENTER, DEFAULT_ZOOM } from '../gis/basemaps.js'
 import {
+  EMPTY_POINT,
   isRasterLayer,
   isVectorLayer,
+  MAX_POLYGON_VERTICES,
   POINT_RING,
   ringToLatLngs,
   SPLAT_POINT,
@@ -21,24 +25,28 @@ import GisRasterOverlay from './gis/GisRasterOverlay.jsx'
 import GisVectorLayer from './gis/GisVectorLayer.jsx'
 
 /**
- * Draw the outline of a target by clicking its corners.
+ * Show the outline of a target, and — when it is being drawn rather than
+ * derived from the photos — let it be drawn by clicking its corners.
  *
  * The ring is kept in API order — [[lon, lat], ...] — and only converted to
  * Leaflet order at the point of rendering, via ringToLatLngs. It is also left
  * open: the server closes it, because a drawing UI has no reason to know that
  * GeoJSON wants the first position repeated at the end.
+ *
+ * Passing no `onChange` makes the map read-only, which is what the photo-derived
+ * sources do: the shape is theirs to compute, and a stray click must not start
+ * quietly editing it.
  */
 
 // Six decimals is ~0.1 m, past the point where a click could be more precise.
 const PRECISION = 6
 
-// Matches MAX_POLYGON_VERTICES on the server, so the limit is felt while
-// drawing rather than reported after a failed submit.
-const MAX_VERTICES = 1000
-
 // GisMap refuses vector layers past 150k features and asks before 20k. This map
 // is a 220px picker, not the GIS workspace, so it just skips the heavy ones.
 const MAX_PICKER_FEATURES = 20_000
+
+// Close enough to read a roofline, far enough not to sit inside one building.
+const POINT_ZOOM = 17
 
 const noop = () => {}
 
@@ -48,6 +56,47 @@ function ClickToAddVertex({ onAdd }) {
   useMapEvents({
     click: (event) => onAdd([round(event.latlng.lng), round(event.latlng.lat)]),
   })
+  return null
+}
+
+/**
+ * Move the map to whatever is currently being shown.
+ *
+ * MapContainer reads `center`/`zoom` once, at mount, so without this the map
+ * stays parked where it was when the user switches from a drawn ring to a hull
+ * across town — the switch would change the answer and show nothing of it.
+ *
+ * `fitKey` is what says "refit now": fitting on the geometry alone would fight
+ * the user for the viewport every time a corner is added.
+ */
+function FitToShape({ positions, photoPositions, pointPosition, fitKey }) {
+  const map = useMap()
+
+  useEffect(() => {
+    const all = [...positions, ...photoPositions]
+
+    if (pointPosition) {
+      all.push(pointPosition)
+    }
+
+    if (all.length === 0) {
+      return
+    }
+
+    const bounds = L.latLngBounds(all)
+
+    // A lone point gives a zero-area bounds, which fitBounds resolves at
+    // maximum zoom over nothing.
+    if (all.length === 1 || !bounds.isValid() || bounds.getNorthEast().equals(bounds.getSouthWest())) {
+      map.setView(all[0], POINT_ZOOM)
+      return
+    }
+
+    map.fitBounds(bounds, { padding: [24, 24], maxZoom: POINT_ZOOM })
+    // Deliberately keyed on fitKey alone — see the note above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey, map])
+
   return null
 }
 
@@ -61,7 +110,14 @@ const centroidOf = (ring) => {
   return { lon: lonSum / ring.length, lat: latSum / ring.length }
 }
 
-function PolygonPicker({ value = [], onChange }) {
+function PolygonPicker({
+  value = [],
+  onChange,
+  point = null,
+  photoPoints = [],
+  fitKey = '',
+}) {
+  const editable = typeof onChange === 'function'
   const [basemapId, setBasemapId] = useState('osm')
   const basemap = BASEMAPS[basemapId] ?? BASEMAPS.osm
 
@@ -80,16 +136,27 @@ function PolygonPicker({ value = [], onChange }) {
   const skipped = visible.filter(isVectorLayer).length - vectors.length
 
   const positions = useMemo(() => ringToLatLngs(value), [value])
+  // A point list is the same [[lon, lat], ...] shape a ring is, so the one
+  // Leaflet-order converter covers both.
+  const photoPositions = useMemo(() => ringToLatLngs(photoPoints), [photoPoints])
+  const pointPosition = useMemo(
+    () => (point ? ringToLatLngs([point])[0] : null),
+    [point],
+  )
   const centre = useMemo(() => centroidOf(value), [value])
 
-  const addVertex = (point) => {
-    if (value.length >= MAX_VERTICES) return
-    onChange([...value, point])
+  const addVertex = (vertex) => {
+    if (value.length >= MAX_POLYGON_VERTICES) return
+    onChange([...value, vertex])
   }
 
   return (
     <div className="gv-gis-map gv-coord-picker">
-      <div className="gv-coord-picker-canvas" data-basemap={basemap.id}>
+      <div
+        className="gv-coord-picker-canvas"
+        data-basemap={basemap.id}
+        data-editable={editable ? '1' : '0'}
+      >
         <MapContainer
           center={centre ? [centre.lat, centre.lon] : DEFAULT_CENTER}
           zoom={centre ? 15 : DEFAULT_ZOOM}
@@ -108,6 +175,9 @@ function PolygonPicker({ value = [], onChange }) {
               pane sits above both. */}
           <Pane name="gis-raster" style={{ zIndex: 400 }} />
           <Pane name="gis-vector" style={{ zIndex: 450 }} />
+          {/* Camera positions sit under the shape they produced, so a dense
+              orbit never hides the outline it describes. */}
+          <Pane name="photos" style={{ zIndex: 490 }} />
           <Pane name="draw" style={{ zIndex: 500 }} />
 
           {rasters.map((layer) => (
@@ -128,7 +198,47 @@ function PolygonPicker({ value = [], onChange }) {
             />
           ))}
 
-          <ClickToAddVertex onAdd={addVertex} />
+          {editable ? <ClickToAddVertex onAdd={addVertex} /> : null}
+
+          <FitToShape
+            positions={positions}
+            photoPositions={photoPositions}
+            pointPosition={pointPosition}
+            fitKey={fitKey}
+          />
+
+          {/* Where the photos were taken. interactive={false} for the same
+              reason the vector layers are: a path that takes the click stops a
+              corner from landing under it. */}
+          {photoPositions.map((position, index) => (
+            <CircleMarker
+              key={index}
+              pane="photos"
+              center={position}
+              radius={3}
+              interactive={false}
+              pathOptions={{
+                color: POINT_RING,
+                weight: 1,
+                fillColor: EMPTY_POINT,
+                fillOpacity: 0.9,
+              }}
+            />
+          ))}
+
+          {pointPosition ? (
+            <CircleMarker
+              pane="draw"
+              center={pointPosition}
+              radius={7}
+              pathOptions={{
+                color: '#ffffff',
+                weight: 2,
+                fillColor: SPLAT_POINT,
+                fillOpacity: 1,
+              }}
+            />
+          ) : null}
 
           {/* The ring is drawn closed from three corners on, so there is no
               "click the first vertex to finish" gesture — that would mean
@@ -205,30 +315,44 @@ function PolygonPicker({ value = [], onChange }) {
 
       <div className="gv-coord-picker-foot">
         <span className="text-muted">
-          {value.length === 0
-            ? 'Click the map to place the first corner'
-            : value.length < 3
-              ? `${value.length} corner${value.length === 1 ? '' : 's'} — at least 3 needed`
-              : `${value.length} corners · centre ${centre.lat.toFixed(5)}, ${centre.lon.toFixed(5)}`}
+          {point
+            ? `Mean of ${photoPoints.length} photo location${photoPoints.length === 1 ? '' : 's'}`
+              + ` · ${point[1].toFixed(5)}, ${point[0].toFixed(5)}`
+            : !editable
+              ? value.length >= 3
+                ? `${value.length} corners around ${photoPoints.length} photo`
+                  + `${photoPoints.length === 1 ? '' : 's'}`
+                : 'These photos do not describe an area'
+              : value.length === 0
+                ? 'Click the map to place the first corner'
+                : value.length < 3
+                  ? `${value.length} corner${value.length === 1 ? '' : 's'} — at least 3 needed`
+                  : `${value.length} corners · centre ${centre.lat.toFixed(5)}, ${centre.lon.toFixed(5)}`}
         </span>
 
         <div className="gv-coord-picker-actions">
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={value.length === 0}
-            onClick={() => onChange(value.slice(0, -1))}
-          >
-            Undo
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={value.length === 0}
-            onClick={() => onChange([])}
-          >
-            Clear
-          </button>
+          {/* Undo and Clear edit the ring, so they only exist when there is a
+              ring to edit — a derived shape follows the photos instead. */}
+          {editable ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={value.length === 0}
+                onClick={() => onChange(value.slice(0, -1))}
+              >
+                Undo
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={value.length === 0}
+                onClick={() => onChange([])}
+              >
+                Clear
+              </button>
+            </>
+          ) : null}
 
           <div className="seg" role="radiogroup" aria-label="Basemap">
             {Object.values(BASEMAPS).map((entry) => (

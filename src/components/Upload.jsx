@@ -4,6 +4,8 @@ import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { useAuth } from '../hooks/useAuth.js'
 import SignInNotice from './auth/SignInNotice.jsx'
 import PolygonPicker from './PolygonPicker.jsx'
+import { convexHull, MAX_POLYGON_VERTICES, meanPoint } from '../gis/gisGeo.js'
+import { fileKey, readGpsPoints } from '../gis/photoGps.js'
 import { IconArrowRight, IconClose, IconNode, IconRegion, IconSearch, IconUpload } from './icons.jsx'
 
 const POLL_INTERVAL_MS = 3000
@@ -150,14 +152,28 @@ function Upload() {
     const [selectedId, setSelectedId] = useState(null)
 
     const [newName, setNewName] = useState('')
-    // The drawn outline, [[lon, lat], ...] in API order. Replaces the old
-    // lat/lon pair: with a polygon there is no single point to type, and keeping
-    // both would need a precedence rule with no defensible answer.
-    const [newPolygon, setNewPolygon] = useState([])
+    // The hand-drawn outline, [[lon, lat], ...] in API order. Kept separately
+    // from the photo-derived shapes so switching sources never destroys it.
+    const [drawnPolygon, setDrawnPolygon] = useState([])
+
+    // The source the user picked by hand, or null while they have not — in
+    // which case the photos decide. Only ever the *asked for* source; what is
+    // actually in force is derived below, since a photo-derived source stops
+    // existing the moment its photos do.
+    const [chosenSource, setChosenSource] = useState(null) // 'photos' | 'point' | 'draw' | null
+
+    // { 'name:size': [lon, lat] | null } — null means "scanned, has no GPS",
+    // absent means "not scanned yet". Files are never re-read.
+    const [gpsByFile, setGpsByFile] = useState({})
+    const [gpsScanning, setGpsScanning] = useState(false)
 
     const [files, setFiles] = useState([])
     const [dragging, setDragging] = useState(false)
     const fileInputRef = useRef(null)
+    // Files whose GPS is being read right now, so a re-render mid-scan does not
+    // queue them a second time.
+    const scanningKeys = useRef(new Set())
+    const mounted = useRef(true)
 
     // Off by default, matching the backend's `want_mesh` default: the mesh is a
     // second GPU stage on top of the splat, so asking for it roughly doubles the
@@ -172,6 +188,10 @@ function Upload() {
 
     useEffect(() => {
         document.title = 'Upload'
+    }, [])
+
+    useEffect(() => () => {
+        mounted.current = false
     }, [])
 
     // All nodes/regions, not just processed ones /splat_nodes and /splat_regions
@@ -248,8 +268,8 @@ function Upload() {
         const images = Array.from(incoming).filter(isImage)
 
         setFiles((current) => {
-            const seen = new Set(current.map((file) => `${file.name}:${file.size}`))
-            return [...current, ...images.filter((file) => !seen.has(`${file.name}:${file.size}`))]
+            const seen = new Set(current.map(fileKey))
+            return [...current, ...images.filter((file) => !seen.has(fileKey(file)))]
         })
     }
 
@@ -263,10 +283,98 @@ function Upload() {
         setFiles((current) => current.filter((_, i) => i !== index))
     }
 
+    // Read GPS out of any photo not seen yet.
+    //
+    // Deliberately not cancelled when `files` changes: a scan of 300 photos
+    // easily outlives a second drop, and its results are keyed and additive, so
+    // throwing them away to start over would be pure waste. The in-flight keys
+    // are tracked instead, which is what stops the same file being read twice.
+    useEffect(() => {
+        const pending = files.filter((file) => {
+            const key = fileKey(file)
+            return !(key in gpsByFile) && !scanningKeys.current.has(key)
+        })
+
+        if (pending.length === 0) {
+            return
+        }
+
+        for (const file of pending) {
+            scanningKeys.current.add(fileKey(file))
+        }
+
+        setGpsScanning(true)
+
+        readGpsPoints(pending)
+            .then((found) => {
+                if (mounted.current) {
+                    setGpsByFile((current) => ({ ...current, ...found }))
+                }
+            })
+            .finally(() => {
+                for (const file of pending) {
+                    scanningKeys.current.delete(fileKey(file))
+                }
+
+                if (mounted.current && scanningKeys.current.size === 0) {
+                    setGpsScanning(false)
+                }
+            })
+    }, [files, gpsByFile])
+
+    // Derived from the *current* file list rather than a snapshot, so removing
+    // a photo whose GPS fix is obviously wrong reshapes the outline on the spot.
+    const photoPoints = useMemo(
+        () => files.map((file) => gpsByFile[fileKey(file)]).filter(Boolean),
+        [files, gpsByFile],
+    )
+    const photoHull = useMemo(() => convexHull(photoPoints), [photoPoints])
+    const photoMean = useMemo(() => meanPoint(photoPoints), [photoPoints])
+
+    const geotagged = photoPoints.length
+    const hasHull = photoHull.length >= 3
+    const hasMean = Boolean(photoMean)
+
+    /**
+     * The source actually in force.
+     *
+     * Derived rather than stored, so there is nothing to keep in sync: a
+     * photo-derived source that runs out of photos falls back to drawing on
+     * its own, and comes back if the photos do.
+     *
+     * Drawing is the floor — it needs nothing from the photos and always works.
+     * With no choice made yet, the photo outline wins the moment it exists,
+     * which is the whole point of reading the metadata; a drawing already under
+     * way is left alone, because auto-selecting over it would discard work.
+     */
+    const outlineSource = useMemo(() => {
+        if (chosenSource === 'photos') return hasHull ? 'photos' : 'draw'
+        if (chosenSource === 'point') return hasMean ? 'point' : 'draw'
+        if (chosenSource === 'draw') return 'draw'
+        return hasHull && drawnPolygon.length === 0 ? 'photos' : 'draw'
+    }, [chosenSource, hasHull, hasMean, drawnPolygon.length])
+
+    const chooseSource = (next) => {
+        setChosenSource(next)
+
+        // A point target *is* a node here: /regions takes a polygon or nothing
+        // at all, because regions.geom is typed MultiPolygon. Rather than fake
+        // a square around the mean, follow the data model.
+        if (next === 'point') {
+            setTargetType('node')
+            setSelectedId(null)
+        }
+    }
+
+    const activeRing = outlineSource === 'draw'
+        ? drawnPolygon
+        : outlineSource === 'photos' ? photoHull : []
+    const activePoint = outlineSource === 'point' ? photoMean : null
+
     const targetReady = mode === 'existing'
         ? Boolean(selectedId)
-        // Both types now need an outline, so regions no longer bypass the check.
-        : Boolean(newName.trim()) && newPolygon.length >= 3
+        // Both types now need a geometry, so regions no longer bypass the check.
+        : Boolean(newName.trim()) && (activeRing.length >= 3 || Boolean(activePoint))
 
     // The client gate is UX, not security the three POSTs below are still
     // rejected by the backend without a token.
@@ -341,10 +449,23 @@ function Upload() {
                 setStatus(`Creating ${targetType}`)
                 name = newName.trim()
 
-                // One shape for both types now. The server closes the ring,
-                // derives a node's point with ST_PointOnSurface, and tags a
-                // drawn region with source='drawn'.
-                const body = { name, polygon: newPolygon }
+                // The hull of a large enough photo set could in principle pass
+                // the server's limit. Say so here rather than let it come back
+                // as a 400 after the outline has already been accepted on screen.
+                if (!activePoint && activeRing.length > MAX_POLYGON_VERTICES) {
+                    throw new Error(
+                        `That outline has ${activeRing.length} corners; the limit is`
+                        + ` ${MAX_POLYGON_VERTICES}. Draw one by hand instead.`,
+                    )
+                }
+
+                // A polygon for both types — the server closes the ring, derives
+                // a node's point with ST_PointOnSurface, and tags a drawn region
+                // with source='drawn'. A mean point instead goes down /nodes'
+                // lat/lon path, which is why point mode forces the node type.
+                const body = activePoint
+                    ? { name, lat: activePoint[1], lon: activePoint[0] }
+                    : { name, polygon: activeRing }
 
                 const createResponse = await fetch(`${apiBaseUrl}/${targetType}s`, {
                     method: 'POST',
@@ -464,14 +585,21 @@ function Upload() {
                             <button
                                 type="button"
                                 className={`btn ${targetType === 'node' ? 'btn-primary' : 'btn-secondary'}`}
-                                onClick={() => { setTargetType('node'); setSelectedId(null); setNewPolygon([]) }}
+                                onClick={() => { setTargetType('node'); setSelectedId(null); setDrawnPolygon([]) }}
                             >
                                 Node
                             </button>
                             <button
                                 type="button"
                                 className={`btn ${targetType === 'region' ? 'btn-primary' : 'btn-secondary'}`}
-                                onClick={() => { setTargetType('region'); setSelectedId(null); setNewPolygon([]) }}
+                                // A mean point can only be stored as a node, so
+                                // the type is not the user's to change while
+                                // that source is active.
+                                disabled={mode === 'new' && outlineSource === 'point'}
+                                title={mode === 'new' && outlineSource === 'point'
+                                    ? 'A single point is stored as a node'
+                                    : undefined}
+                                onClick={() => { setTargetType('region'); setSelectedId(null); setDrawnPolygon([]) }}
                             >
                                 Region
                             </button>
@@ -527,7 +655,55 @@ function Upload() {
 
                                 <div className="field">
                                     <label className="gv-detail-label">Outline</label>
-                                    <PolygonPicker value={newPolygon} onChange={setNewPolygon} />
+
+                                    {/* Same segmented control the picker uses for
+                                        its basemap, so the two rows under the
+                                        label read as one set of choices. */}
+                                    <div className="seg gv-coord-source" role="radiogroup" aria-label="Outline source">
+                                        <label className="seg-opt">
+                                            <input
+                                                type="radio"
+                                                name="outline-source"
+                                                value="photos"
+                                                disabled={!hasHull}
+                                                checked={outlineSource === 'photos'}
+                                                onChange={() => chooseSource('photos')}
+                                            />
+                                            {hasHull ? `Photo outline · ${photoHull.length} corners` : 'Photo outline'}
+                                        </label>
+                                        <label className="seg-opt">
+                                            <input
+                                                type="radio"
+                                                name="outline-source"
+                                                value="point"
+                                                disabled={!hasMean}
+                                                checked={outlineSource === 'point'}
+                                                onChange={() => chooseSource('point')}
+                                            />
+                                            Mean point
+                                        </label>
+                                        <label className="seg-opt">
+                                            <input
+                                                type="radio"
+                                                name="outline-source"
+                                                value="draw"
+                                                checked={outlineSource === 'draw'}
+                                                onChange={() => chooseSource('draw')}
+                                            />
+                                            Draw my own
+                                        </label>
+                                    </div>
+
+                                    {/* No onChange for a derived shape: it belongs
+                                        to the photos, and a stray click must not
+                                        start quietly editing it. */}
+                                    <PolygonPicker
+                                        value={activeRing}
+                                        onChange={outlineSource === 'draw' ? setDrawnPolygon : undefined}
+                                        point={activePoint}
+                                        photoPoints={photoPoints}
+                                        fitKey={`${outlineSource}:${geotagged}`}
+                                    />
                                 </div>
                             </div>
                         )}
@@ -559,6 +735,16 @@ function Upload() {
                                 onChange={(event) => { addFiles(event.target.files); event.target.value = '' }}
                             />
                         </div>
+
+                        {files.length > 0 ? (
+                            <p className="text-muted gv-photo-gps">
+                                {gpsScanning
+                                    ? 'Reading photo locations…'
+                                    : geotagged === 0
+                                        ? 'No photo carries GPS — draw the outline instead'
+                                        : `${geotagged} of ${files.length} photos have GPS`}
+                            </p>
+                        ) : null}
 
                         {files.length > 0 ? (
                             <div className="gv-file-list">
@@ -637,10 +823,14 @@ function Upload() {
                         {mode === 'new' ? (
                             <div className="gv-detail-row">
                                 <span className="gv-detail-label">Outline</span>
-                                <span className="gv-detail-value">
-                                    {newPolygon.length === 0
-                                        ? 'Not drawn'
-                                        : `${newPolygon.length} corners`}
+                                <span className="gv-detail-value gv-detail-value--right">
+                                    {activePoint
+                                        ? `Mean point · ${activePoint[1].toFixed(5)}, ${activePoint[0].toFixed(5)}`
+                                        : activeRing.length === 0
+                                            ? 'Not set'
+                                            : outlineSource === 'photos'
+                                                ? `From photos · ${activeRing.length} corners`
+                                                : `Drawn · ${activeRing.length} corners`}
                                 </span>
                             </div>
                         ) : null}

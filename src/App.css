@@ -621,6 +621,27 @@
 /* The whole map is a target, so say so with the cursor. */
 .gv-coord-picker-canvas .leaflet-container { cursor: crosshair; }
 
+/* …but a photo-derived outline is not editable, so promising a click would be
+   a lie. Back to the panning cursor Leaflet ships with. */
+.gv-coord-picker-canvas[data-editable="0"] .leaflet-container { cursor: grab; }
+.gv-coord-picker-canvas[data-editable="0"] .leaflet-container:active { cursor: grabbing; }
+
+/* Where the outline comes from — photos or the user's own clicks. Sits between
+   the field label and the map it controls. */
+.gv-coord-source {
+  margin-top: var(--space-2);
+}
+
+/* .seg-opt has no disabled state of its own; a source with nothing behind it
+   (no geotagged photos yet) has to read as unavailable rather than merely
+   unselected. Driven off the real `disabled` attribute, so there is one truth. */
+.seg-opt:has(input:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.seg-opt:has(input:disabled):hover { background: none; }
+
 .gv-coord-picker-foot {
   display: flex;
   align-items: center;
@@ -1011,6 +1032,14 @@
 }
 
 .gv-file-size { font-size: 12px; }
+
+/* How many of the dropped photos carry GPS — sits between the dropzone and the
+   file list, because it is a fact about the set as a whole. */
+.gv-photo-gps {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 
 .gv-upload-options {
   display: flex;

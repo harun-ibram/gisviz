@@ -263,6 +263,10 @@ function Upload() {
         setFiles((current) => current.filter((_, i) => i !== index))
     }
 
+    const removeAllFiles = () => {
+        setFiles([])
+    }
+
     const targetReady = mode === 'existing'
         ? Boolean(selectedId)
         // Both types now need an outline, so regions no longer bypass the check.
@@ -538,6 +542,17 @@ function Upload() {
                             <h4>Photos</h4>
                             <span className="tag tag-neutral">{files.length}</span>
                             <div className="hr gv-section-rule" />
+                            {/* Sits after the rule so it lands at the right edge
+                                of the head, the way Undo/Clear do under the
+                                outline picker. */}
+                            <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                disabled={files.length === 0 || running}
+                                onClick={removeAllFiles}
+                            >
+                                Remove all
+                            </button>
                         </div>
 
                         <div

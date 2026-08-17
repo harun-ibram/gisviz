@@ -3,12 +3,14 @@ import { Polygon, Tooltip, useMap, useMapEvents } from 'react-leaflet'
 import {
   formatMetres,
   formatVolume,
+  heightSourceOf,
   outerRings,
   ringContains,
   volumeBreaks,
   volumeClass,
   volumeOf,
 } from '../gis/buildings.js'
+import { fillHeightsFromGeotiff } from '../gis/geotiffHeights.js'
 import {
   EMPTY_POINT,
   EMPTY_POINT_WALL,
@@ -22,7 +24,13 @@ import {
 } from '../gis/gisGeo.js'
 
 /**
- * LiDAR-measured buildings on the location map, faked into 2.5D.
+ * Measured buildings on the location map, faked into 2.5D.
+ *
+ * "Measured" is two sources, not one. `/gis/buildings` returns heights the
+ * backend derived from LiDAR; everything it left null goes through
+ * gis/geotiffHeights.js, which samples an uploaded GeoTIFF surface in the
+ * browser for the same measurement. A footprint is drawn flat only when
+ * neither covered it.
  *
  * Leaflet is flat, so height is drawn the way a cabinet projection draws it:
  * the roof is the footprint translated straight up the screen by exactly the
@@ -103,6 +111,7 @@ function toBody(feature, ring, key, map, zoom, breaks, targets) {
 
   const properties = feature.properties ?? {}
   const height = properties.height_m
+  const source = heightSourceOf(properties)
   const cls = volumeClass(volumeOf(properties), breaks)
 
   const north = Math.max(...ring.map(([, lat]) => lat))
@@ -132,6 +141,7 @@ function toBody(feature, ring, key, map, zoom, breaks, targets) {
     north,
     name: properties.name ?? null,
     height,
+    source,
     volume: volumeOf(properties),
     coverage: properties.coverage ?? null,
     target: target ?? null,
@@ -168,8 +178,9 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
   const [bbox, setBbox] = useState(() => mapBoundsToApiBbox(map.getBounds()))
   // Kept together with the bbox they were fetched for, so a pan can keep
   // drawing the old buildings while the new ones are in flight without also
-  // reporting their stale count in the caption.
-  const [loaded, setLoaded] = useState({ key: null, features: [], total: 0 })
+  // reporting their stale count in the caption. `geotiff` is what the
+  // browser-side pass added on top, or null when it had nothing to add.
+  const [loaded, setLoaded] = useState({ key: null, features: [], total: 0, geotiff: null })
   const timerRef = useRef(null)
 
   // Zoom is taken immediately but the bbox is debounced: geometry is projected
@@ -209,23 +220,49 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
 
     const controller = new AbortController()
     const url = `${apiBaseUrl}/gis/buildings?bbox=${bboxKey}&limit=${MAX_BUILDINGS}`
+    let live = true
 
-    fetch(url, { signal: controller.signal })
-      .then((response) => {
+    const load = async () => {
+      try {
+        const response = await fetch(url, { signal: controller.signal })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        return response.json()
-      })
-      .then((data) => {
-        const found = data.features ?? []
-        setLoaded({ key: bboxKey, features: found, total: data.total ?? found.length })
-      })
-      .catch((cause) => {
-        if (cause.name === 'AbortError') return
-        setLoaded({ key: bboxKey, features: [], total: 0 })
-        onStatus({ kind: 'error', message: cause.message })
-      })
 
-    return () => controller.abort()
+        const data = await response.json()
+        if (!live) return
+
+        const found = data.features ?? []
+        const total = data.total ?? found.length
+
+        // Drawn before the GeoTIFF pass, not after it: the LiDAR heights are
+        // already in hand, and holding the whole layer back for a raster read
+        // would make every pan feel like the map had stalled.
+        setLoaded({ key: bboxKey, features: found, total, geotiff: null })
+
+        // Parsed back out of the key rather than closed over `bbox`: setBbox
+        // hands out a fresh array on every moveend, so depending on it would
+        // re-fetch after a pan too small to change the rounded key.
+        const bounds = bboxKey.split(',').map(Number)
+        const filled = await fillHeightsFromGeotiff(found, {
+          apiBaseUrl,
+          bbox: bounds,
+          signal: controller.signal,
+        })
+
+        if (!live || (filled.filled === 0 && !filled.note)) return
+        setLoaded({ key: bboxKey, features: filled.features, total, geotiff: filled })
+      } catch (cause) {
+        if (cause.name === 'AbortError' || !live) return
+        setLoaded({ key: bboxKey, features: [], total: 0, geotiff: null })
+        onStatus({ kind: 'error', message: cause.message })
+      }
+    }
+
+    load()
+
+    return () => {
+      live = false
+      controller.abort()
+    }
   }, [active, apiBaseUrl, bboxKey, zoom, onStatus])
 
   const features = loaded.features
@@ -266,9 +303,15 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
       shown: bodies.length,
       total: loaded.total,
       measured: bodies.filter((body) => body.measured).length,
+      // Counted off the drawn bodies rather than taken from the pass's own
+      // tally: the pass measures every footprint it was handed, while these are
+      // the ones that survived into geometry.
+      geotiff: bodies.filter((body) => body.source === 'geotiff').length,
+      groundFromSurface: loaded.geotiff?.groundFromSurface ?? false,
+      geotiffNote: loaded.geotiff?.note ?? null,
       splats: bodies.filter((body) => body.target).length,
     })
-  }, [bodies, fresh, loaded.total, onStatus])
+  }, [bodies, fresh, loaded.total, loaded.geotiff, onStatus])
 
   return bodies.map((body) => (
     <Fragment key={body.key}>
@@ -310,8 +353,19 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
           <strong>{body.target?.name ?? body.name ?? 'Building'}</strong>
           <br />
           {body.height === null || body.height === undefined
-            ? 'No LiDAR cover — height unknown'
+            ? 'No elevation cover — height unknown'
             : `${formatMetres(body.height)} · ${formatVolume(body.volume)}`}
+          {/* Which surface produced the number, on its own line: a GeoTIFF
+              height is measured the same way but off a coarser and usually
+              older grid, so it is worth knowing before quoting it. */}
+          {body.source ? (
+            <>
+              <br />
+              <span className="text-muted">
+                {body.source === 'geotiff' ? 'from GeoTIFF surface' : 'from LiDAR'}
+              </span>
+            </>
+          ) : null}
           {body.target ? (
             <>
               <br />

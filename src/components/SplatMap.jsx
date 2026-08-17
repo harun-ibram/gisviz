@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import L from 'leaflet'
 import { CircleMarker, MapContainer, Polygon, TileLayer, Tooltip, useMap } from 'react-leaflet'
@@ -135,16 +135,38 @@ function SplatMap({ className = '' }) {
   // Buildings are fetched for the viewport, not the library, so their state is
   // reported separately — "nothing here" and "you are too far out" are
   // different answers and only one of them is worth acting on.
-  const buildingNote = (() => {
-    if (!buildings) return null
-    if (buildings.kind === 'zoom') return 'zoom in for building heights'
-    if (buildings.kind === 'error') return `buildings unavailable — ${buildings.message}`
-    if (buildings.shown === 0) return 'no buildings measured here'
+  //
+  // Returns lines rather than one string: the GeoTIFF pass can fail on its own
+  // while the LiDAR heights are perfectly fine, and appending its complaint to
+  // the count would read as though the count were in doubt.
+  const buildingNotes = (() => {
+    if (!buildings) return []
+    if (buildings.kind === 'zoom') return ['zoom in for building heights']
+    if (buildings.kind === 'error') return [`buildings unavailable — ${buildings.message}`]
+    if (buildings.shown === 0) return ['no buildings measured here']
+
     const clipped = buildings.total > buildings.shown ? ` of ${buildings.total}` : ''
     const matched = buildings.splats > 0
       ? ` · ${buildings.splats} ${buildings.splats === 1 ? 'is' : 'are'} yours`
       : ''
-    return `${buildings.measured}/${buildings.shown}${clipped} buildings with a LiDAR height${matched}`
+    // "measured", not "LiDAR": the same count now covers both surfaces, and
+    // the split is spelled out on the next line when there is one to spell.
+    const lines = [
+      `${buildings.measured}/${buildings.shown}${clipped} buildings with a measured height${matched}`,
+    ]
+
+    if (buildings.geotiff > 0) {
+      lines.push(`${buildings.geotiff} measured against a GeoTIFF surface${
+        // Worth saying out loud: with no DEM the datum is the surrounding
+        // surface, which reads high inside a dense terrace and shortens the
+        // building. The number is still useful, it is just not survey-grade.
+        buildings.groundFromSurface ? ' · no DEM uploaded, ground taken from the surface itself' : ''
+      }`)
+    }
+
+    if (buildings.geotiffNote) lines.push(buildings.geotiffNote)
+
+    return lines
   })()
 
   const open = useCallback((feature) => {
@@ -285,7 +307,7 @@ function SplatMap({ className = '' }) {
                 style={{ background: NO_DATA_COLOUR, opacity: 0.5 }}
                 aria-hidden="true"
               />
-              no LiDAR
+              no elevation
             </span>
             {buildings.splats > 0 ? (
               <span className="map-key-item">
@@ -329,7 +351,7 @@ function SplatMap({ className = '' }) {
               // this is what distinguishes "the map is broken" from "these
               // targets predate drawn outlines".
               : `${withSplat} of ${features.length} with a splat · ${withOutline} outlined`}
-        {buildingNote ? <><br />{buildingNote}</> : null}
+        {buildingNotes.map((note) => <Fragment key={note}><br />{note}</Fragment>)}
       </p>
     </div>
   )

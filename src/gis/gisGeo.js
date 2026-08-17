@@ -164,8 +164,9 @@ export const VOLUME_RAMP_DARK_BG_WALL = ['#57708c', '#345b85', '#234675', '#1733
 export const VOLUME_CLASS_LABELS = ['smallest 25%', '25–50%', '50–75%', 'largest 25%']
 
 /**
- * A footprint with no usable LiDAR cover. Deliberately off-ramp and
- * desaturated: absence of a measurement is not the bottom of the scale.
+ * A footprint no elevation source usably covered — neither LiDAR nor a
+ * GeoTIFF surface. Deliberately off-ramp and desaturated: absence of a
+ * measurement is not the bottom of the scale.
  */
 export const NO_DATA_COLOUR = '#a8a49a'
 export const NO_DATA_WALL = '#8b877d'

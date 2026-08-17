@@ -3,7 +3,8 @@ import { useLocation } from 'react-router-dom'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import * as THREE from 'three'
 import { NO_DATA_COLOUR, VOLUME_CLASS_LABELS, VOLUME_RAMP_DARK_BG } from '../gis/gisGeo.js'
-import { outerRings, volumeBreaks, volumeClass, volumeOf } from '../gis/buildings.js'
+import { heightSourceOf, outerRings, volumeBreaks, volumeClass, volumeOf } from '../gis/buildings.js'
+import { fillHeightsFromGeotiff } from '../gis/geotiffHeights.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
@@ -103,7 +104,7 @@ const relightAsDiffuse = (root) => {
 // ---------------------------------------------------------------------------
 // Buildings (Phase 4a)
 //
-// LiDAR-measured footprints, extruded into a metrically correct mesh: the scene
+// Measured footprints, extruded into a metrically correct mesh: the scene
 // is a local ENU frame where 1 three.js unit = 1 metre, east is +X, north is
 // -Z and up is +Y. Distances in here are real, so the FPS camera's 2.2 units/s
 // is a walking pace and a 12 m building is 12 units tall.
@@ -121,14 +122,15 @@ const METRES_PER_DEGREE_LAT = 111320
 // index the same class list, so a building keeps its class across views.
 const BUILDING_COLOURS = VOLUME_RAMP_DARK_BG
 
-// Footprints with no usable LiDAR cover have no height to extrude. They are
-// still drawn, as a thin slab, so "we have this building but not its height"
-// is visible rather than silently absent.
+// Footprints no elevation source usably covered — neither the LiDAR the
+// backend measured against nor a GeoTIFF surface sampled in the browser — have
+// no height to extrude. They are still drawn, as a thin slab, so "we have this
+// building but not its height" is visible rather than silently absent.
 const UNMEASURED_HEIGHT_M = 0.4
 
 /**
  * Build the building scene: one merged mesh per volume class, plus the flat
- * patches for any area the user drew but LiDAR never measured.
+ * patches for any area the user drew that nothing ever measured.
  *
  * Returns { group, origin, radius, measured, total, drawn } or null.
  *
@@ -163,12 +165,19 @@ const buildBuildingMesh = (features, drawnFeatures = []) => {
   const byClass = BUILDING_COLOURS.map(() => [])
   const unmeasured = []
   let measured = 0
+  let fromGeotiff = 0
 
   for (const feature of features) {
     const properties = feature.properties ?? {}
     const height = properties.height_m
     const hasHeight = height !== null && height !== undefined && height > 0
-    if (hasHeight) measured += 1
+    if (hasHeight) {
+      measured += 1
+      // Counted, not coloured differently: the extrusion is the same claim
+      // either way, and a second no-data hue would say the GeoTIFF ones are
+      // less real than they are. The caption carries the split instead.
+      if (heightSourceOf(properties) === 'geotiff') fromGeotiff += 1
+    }
 
     for (const ring of outerRings(feature.geometry)) {
       if (ring.length < 4) continue
@@ -220,7 +229,7 @@ const buildBuildingMesh = (features, drawnFeatures = []) => {
   byClass.forEach((geometries, index) => addBatch(geometries, BUILDING_COLOURS[index], 1))
   addBatch(unmeasured, NO_DATA_COLOUR, 0.55)
 
-  // ---- areas the user drew, with no LiDAR behind them ---------------------
+  // ---- areas the user drew, with no elevation behind them -----------------
   // Flat, not extruded: the ask was to mark the surface, not to guess a height.
   const patches = []
   let drawn = 0
@@ -276,6 +285,7 @@ const buildBuildingMesh = (features, drawnFeatures = []) => {
     origin: { lon: originLon, lat: originLat },
     radius: Math.max(Math.hypot(halfWidth, halfDepth), 10),
     measured,
+    fromGeotiff,
     total: features.length,
     drawn,
   }
@@ -1028,36 +1038,55 @@ const isTypingTarget = (target) =>
       }
 
       let active = true
-      fetch(`${apiBaseUrl}/gis/buildings?limit=4000&measured_only=false`)
-        .then((response) => {
+
+      const load = async () => {
+        try {
+          const response = await fetch(`${apiBaseUrl}/gis/buildings?limit=4000&measured_only=false`)
           if (!response.ok) throw new Error(`Unable to load buildings (${response.status})`)
-          return response.json()
-        })
-        .then((collection) => {
+
+          const collection = await response.json()
+          if (!active) return
+
+          // Everything LiDAR left unmeasured gets a second pass against an
+          // uploaded GeoTIFF surface before anything is extruded. Unlike the
+          // map, the mesh is built exactly once and then only toggled, so
+          // there is no cheap way to add the heights afterwards — waiting for
+          // the raster read here is the price of not extruding a building
+          // twice.
+          const filled = await fillHeightsFromGeotiff(collection.features ?? [], { apiBaseUrl })
+          if (!active) return
+
           const scene = sceneRef.current
-          if (!active || !scene) return
-          const built = buildBuildingMesh(collection.features ?? [], drawnFeaturesRef.current)
+          if (!scene) return
+
+          const built = buildBuildingMesh(filled.features, drawnFeaturesRef.current)
           if (!built) {
             setBuildingsInfo({ kind: 'empty' })
             return
           }
+
           scene.add(built.group)
           buildingsRef.current = built
           setBuildingsInfo({
             kind: 'ready',
             measured: built.measured,
+            fromGeotiff: built.fromGeotiff,
+            groundFromSurface: filled.groundFromSurface,
+            geotiffNote: filled.note,
             total: built.total,
             drawn: built.drawn,
           })
           frameBuildings()
-        })
-        .catch((fetchError) => {
+        } catch (fetchError) {
           if (!active) return
           setBuildingsInfo({
             kind: 'error',
             message: fetchError instanceof Error ? fetchError.message : 'Unable to load buildings.',
           })
-        })
+        }
+      }
+
+      load()
 
       return () => {
         active = false
@@ -1256,7 +1285,7 @@ const isTypingTarget = (target) =>
             className="btn btn-secondary"
             style={{ borderColor: buildingsOn ? 'var(--color-accent)' : 'var(--color-divider)' }}
             onClick={() => setBuildingsOn((on) => !on)}
-            title="LiDAR-measured building footprints, extruded at true metric scale"
+            title="Building footprints measured against LiDAR or a GeoTIFF surface, extruded at true metric scale"
           >
             {buildingsOn ? 'Hide buildings' : 'Show buildings'}
           </button>
@@ -1306,12 +1335,16 @@ const isTypingTarget = (target) =>
                 {buildingsInfo.kind === 'ready'
                   ? [
                       `${buildingsInfo.measured} of ${buildingsInfo.total} buildings measured`,
+                      buildingsInfo.fromGeotiff
+                        ? `${buildingsInfo.fromGeotiff} from GeoTIFF${buildingsInfo.groundFromSurface ? ' (no DEM — ground from the surface)' : ''}`
+                        : null,
+                      buildingsInfo.geotiffNote,
                       buildingsInfo.drawn ? `${buildingsInfo.drawn} drawn surface${buildingsInfo.drawn === 1 ? '' : 's'}` : null,
                       '1 unit = 1 m',
                       'not aligned to the splat',
                     ].filter(Boolean).join(' · ')
                   : buildingsInfo.kind === 'empty'
-                    ? 'No measured buildings yet — upload a LiDAR tile and an OSM extract.'
+                    ? 'No measured buildings yet — upload an OSM extract, plus a LiDAR tile or a GeoTIFF surface.'
                     : buildingsInfo.message}
               </div>
             ) : null}
@@ -1362,7 +1395,7 @@ const isTypingTarget = (target) =>
                 ))}
                 <span className="gv-volume-legend-item">
                   <i style={{ background: NO_DATA_COLOUR, opacity: 0.55 }} aria-hidden="true" />
-                  no LiDAR cover
+                  no elevation cover
                 </span>
                 {buildingsInfo.drawn ? (
                   <span className="gv-volume-legend-item">

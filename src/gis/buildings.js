@@ -24,12 +24,38 @@ export function outerRings(geometry) {
 /**
  * The volume to colour a building by.
  *
- * `volume_lidar_m3` integrates each raster cell under the roof; `volume_prism_m3`
- * is area x height. The former is the better number, so it wins where both are
- * present. Null means the LiDAR never usably covered this footprint.
+ * `volume_lidar_m3` and `volume_dsm_m3` both integrate each raster cell under
+ * the roof — the first from the LiDAR grid the backend measured, the second
+ * from a GeoTIFF surface sampled in the browser (see gis/geotiffHeights.js).
+ * `volume_prism_m3` is area x height, which averages a pitched roof away, so
+ * either integrated figure wins over it. Null means no elevation source has
+ * usably covered this footprint.
+ *
+ * LiDAR first where both exist: a building only ever gets the GeoTIFF pass
+ * *because* LiDAR left it unmeasured, so the two never really compete — but
+ * fixing the order here means a future re-measure cannot silently downgrade
+ * the number a footprint is coloured by.
  */
 export function volumeOf(properties) {
-  return properties?.volume_lidar_m3 ?? properties?.volume_prism_m3 ?? null
+  return properties?.volume_lidar_m3
+    ?? properties?.volume_dsm_m3
+    ?? properties?.volume_prism_m3
+    ?? null
+}
+
+/**
+ * Which surface this footprint's height was measured against: 'lidar',
+ * 'geotiff', or null when nothing measured it.
+ *
+ * `height_source` is stamped by the browser-side GeoTIFF pass; the rows
+ * `/gis/buildings` returns carry no such field, so a height with no source is
+ * a LiDAR height by elimination. Callers use this to say which number they are
+ * showing rather than to decide whether to show one.
+ */
+export function heightSourceOf(properties) {
+  const height = properties?.height_m
+  if (height === null || height === undefined) return null
+  return properties?.height_source ?? 'lidar'
 }
 
 /**

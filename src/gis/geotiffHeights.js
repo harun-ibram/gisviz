@@ -73,6 +73,11 @@ const MAX_FEATURES = 2000
 // tagged as one building), and rasterising it would freeze the tab.
 const MAX_FOOTPRINT_CELLS = 250_000
 
+// Footprints are pulled straight from the OSM buildings layer's GeoJSON when
+// `/gis/buildings` has no rows. Same ceiling GisMap refuses to draw above: past
+// this the download alone is the problem, before anything is measured.
+const MAX_VECTOR_FEATURES = 150_000
+
 // Signed R2 URLs last an hour; re-opening well before that keeps a long
 // session from hitting a 403 mid-pan.
 const GRID_CACHE_TTL_MS = 25 * 60 * 1000
@@ -556,8 +561,89 @@ function intersectBbox(a, b) {
   return east > west && north > south ? [west, south, east, north] : null
 }
 
+/** Does any outer ring of this geometry overlap the bbox? */
+function touchesBbox(geometry, [west, south, east, north]) {
+  for (const ring of outerRings(geometry)) {
+    let minLon = Infinity
+    let maxLon = -Infinity
+    let minLat = Infinity
+    let maxLat = -Infinity
+
+    for (const [lon, lat] of ring) {
+      minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon)
+      minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat)
+    }
+
+    if (maxLon >= west && minLon <= east && maxLat >= south && minLat <= north) return true
+  }
+
+  return false
+}
+
 /**
- * Fill in the heights `/gis/buildings` could not measure, from a GeoTIFF.
+ * The key a footprint is deduplicated on across the two sources.
+ *
+ * `osm_id` where there is one — `load_gis.upsert_buildings` keys its rows on
+ * exactly that, and `process_vectors` writes `osm_way_id` on some extracts. A
+ * footprint with neither falls back to its first vertex, rounded to about a
+ * decimetre: two different buildings never share one, and the same building
+ * coming from the same extract always does.
+ */
+function footprintKey(feature) {
+  const properties = feature?.properties ?? {}
+  const osmId = properties.osm_id ?? properties.osm_way_id
+  if (osmId !== null && osmId !== undefined && osmId !== '') return `osm:${osmId}`
+
+  const [first] = outerRings(feature?.geometry)
+  if (!first?.length) return null
+  return `at:${first[0][0].toFixed(6)},${first[0][1].toFixed(6)}`
+}
+
+/**
+ * Footprints from an OSM buildings vector layer, cached across pans.
+ *
+ * This is the part that makes a GeoTIFF-only library work at all. `/gis/buildings`
+ * is written by `gis_worker._measure_buildings`, which only ever runs for a
+ * LiDAR tile meeting an OSM extract — for a `tiff` job it returns None and not
+ * one row is stored. So with a GeoTIFF surface and no LiDAR anywhere, that
+ * endpoint is empty and there is nothing to fill in. The footprints still
+ * exist, as the buildings sublayer of the OSM job, and that GeoJSON is the same
+ * file the backend would have measured.
+ *
+ * Module-scope cache, mirroring GisVectorLayer's: the file is tens of MB and
+ * re-downloading it on every pan is not viable.
+ */
+const footprintCache = new Map()
+
+async function loadFootprints(layer, signal) {
+  const cached = footprintCache.get(layer.geojson_key)
+  if (cached) return cached
+
+  const response = await fetch(layer.geojson_url, { signal })
+  if (!response.ok) throw new Error(`Could not download footprints (${response.status})`)
+
+  const parsed = await response.json()
+  const features = parsed?.features ?? []
+
+  // Only one layer's worth is kept. Two is already 40 MB of parsed GeoJSON, and
+  // the map only ever samples the area it is looking at.
+  footprintCache.clear()
+  footprintCache.set(layer.geojson_key, features)
+  return features
+}
+
+/**
+ * Measure buildings against an uploaded GeoTIFF surface.
+ *
+ * Two jobs, because there are two ways a footprint can arrive without a height:
+ *
+ * 1. **Filling.** `/gis/buildings` returned it with `height_m: null` — LiDAR
+ *    exists nearby but did not usably cover this roof.
+ * 2. **Adding.** `/gis/buildings` never returned it at all. That is the normal
+ *    state of a GeoTIFF-only library: `gis_worker._measure_buildings` writes
+ *    rows for a `lidar` or `osm` job and returns None for a `tiff` one, so the
+ *    table stays empty however many surfaces have been uploaded. The footprints
+ *    come from the OSM job's buildings sublayer instead.
  *
  * Never throws and never mutates its input: on any failure — no elevation layer
  * uploaded, a CORS-blocked bucket, a raster too coarse to window — it returns
@@ -565,40 +651,57 @@ function intersectBbox(a, b) {
  * normal state for this map, so it must not be able to take the buildings layer
  * down with it.
  *
- * Returns `{ features, filled, unmeasured, note, layerName, groundFromSurface }`.
+ * Returns `{ features, filled, added, note, layerName, groundFromSurface }`,
+ * where `features` is the caller's list with heights merged in and any newly
+ * measured footprints appended.
  */
-export async function fillHeightsFromGeotiff(features, { apiBaseUrl, bbox, signal } = {}) {
-  const idle = { features, filled: 0, unmeasured: 0, note: null, layerName: null, groundFromSurface: false }
+export async function fillHeightsFromGeotiff(features, {
+  apiBaseUrl,
+  bbox,
+  signal,
+  // How many footprints this caller can render. The map draws two SVG paths per
+  // building into a sidebar panel and asks `/gis/buildings` for 500, so handing
+  // it 2000 measured off the vector layer would be a stall the LiDAR path never
+  // had; the 3D viewer merges into one mesh per class and takes the lot.
+  limit = MAX_FEATURES,
+} = {}) {
+  const known = features ?? []
+  const idle = {
+    features: known,
+    filled: 0,
+    added: 0,
+    note: null,
+    layerName: null,
+    groundFromSurface: false,
+  }
 
-  const pending = (features ?? []).filter((feature) => {
+  const pending = known.filter((feature) => {
     const height = feature?.properties?.height_m
     return height === null || height === undefined
   })
 
-  if (pending.length === 0) return idle
-
-  const measurable = pending.slice(0, MAX_FEATURES)
-
   try {
-    const query = new URLSearchParams({
-      layer_type: 'tiff',
-      kind: 'dsm,dem',
-      geometry_class: 'raster',
-      limit: '50',
-    })
+    // One query for both halves — the elevation raster and the footprint
+    // vectors — rather than a round trip each. `bbox` is the only filter that
+    // meaningfully narrows it; the rest is a handful of rows to sort through.
+    const query = new URLSearchParams({ limit: '100' })
 
     // Scoped to the area in question when the caller has one, so a library with
-    // rasters all over the country does not hand back fifty irrelevant layers.
-    const area = bbox ?? unionBbox(measurable)
+    // layers all over the country does not hand back a hundred irrelevant rows.
+    const area = bbox ?? (pending.length > 0 ? unionBbox(pending) : null)
     if (area) query.set('bbox', area.join(','))
 
     const response = await fetch(`${apiBaseUrl}/gis/layers?${query}`, { signal })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
-    const { dsm, dem } = pickElevationLayers((await response.json()).layers)
+    const layers = (await response.json()).layers ?? []
+    const { dsm, dem } = pickElevationLayers(layers)
     if (!dsm) return idle
 
     const grid = await openGrid(dsm)
+    // With no area from the caller and no pending footprints to derive one
+    // from, the raster's own extent is the scope — which is exactly right for
+    // the 3D viewer, whose question is "what did this surface cover".
     const window = area ? intersectBbox(area, grid.bounds) : grid.bounds
     if (!window) return idle
 
@@ -620,10 +723,13 @@ export async function fillHeightsFromGeotiff(features, { apiBaseUrl, bbox, signa
       if (demWindow) groundTile = (await readTile(demGrid, demWindow, signal)) ?? dsmTile
     }
 
+    // ---- 1. fill the footprints we were handed -----------------------------
     const patches = new Map()
     let filled = 0
 
-    for (const feature of measurable) {
+    const budget = Math.min(limit, MAX_FEATURES)
+
+    for (const feature of pending.slice(0, budget)) {
       const patch = measureFeature(feature, dsmTile, groundTile)
       // Only a patch that actually carries a height is merged. A footprint this
       // raster could not cover either already has the LiDAR row's own
@@ -634,17 +740,68 @@ export async function fillHeightsFromGeotiff(features, { apiBaseUrl, bbox, signa
       filled += 1
     }
 
-    if (filled === 0) return { ...idle, layerName: dsm.name }
+    // ---- 2. add footprints that endpoint never had -------------------------
+    const seen = new Set()
+    for (const feature of known) {
+      const key = footprintKey(feature)
+      if (key) seen.add(key)
+    }
+
+    const extra = []
+    let vectorNote = null
+
+    // Overlapping the surface, not merely newest. Without a caller bbox the
+    // layer list is not scoped to anything, so the most recent buildings layer
+    // can easily be another city's — and every one of its footprints would then
+    // be measured against a raster that does not cover it.
+    const source = layers.find((layer) => layer?.geometry_class === 'vector'
+      && layer.sublayer === 'buildings'
+      && layer.geojson_url
+      && Array.isArray(layer.bounds)
+      && intersectBbox(layer.bounds, window))
+
+    if (source && (source.feature_count ?? 0) > MAX_VECTOR_FEATURES) {
+      vectorNote = `${source.name} has too many features to sample in the browser.`
+    } else if (source) {
+      const room = Math.max(0, budget - known.length)
+
+      for (const feature of await loadFootprints(source, signal)) {
+        if (extra.length >= room) break
+        if (!touchesBbox(feature.geometry, window)) continue
+
+        const key = footprintKey(feature)
+        if (key && seen.has(key)) continue
+
+        const patch = measureFeature(feature, dsmTile, groundTile)
+        if (!patch || patch.height_m === null) continue
+
+        if (key) seen.add(key)
+        extra.push({
+          type: 'Feature',
+          // Namespaced so it cannot collide with a `/gis/buildings` row id,
+          // which is what both views use as their React key.
+          id: `geotiff-${key ?? extra.length}`,
+          geometry: feature.geometry,
+          properties: { ...feature.properties, ...patch },
+        })
+      }
+    }
+
+    if (filled === 0 && extra.length === 0) {
+      return { ...idle, note: vectorNote, layerName: dsm.name }
+    }
+
+    const merged = known.map((feature) => {
+      const patch = patches.get(feature)
+      if (!patch) return feature
+      return { ...feature, properties: { ...feature.properties, ...patch } }
+    })
 
     return {
-      features: features.map((feature) => {
-        const patch = patches.get(feature)
-        if (!patch) return feature
-        return { ...feature, properties: { ...feature.properties, ...patch } }
-      }),
+      features: [...merged, ...extra],
       filled,
-      unmeasured: measurable.length - filled,
-      note: null,
+      added: extra.length,
+      note: vectorNote,
       layerName: dsm.name,
       groundFromSurface: groundTile === dsmTile,
     }

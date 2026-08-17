@@ -246,10 +246,18 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
           apiBaseUrl,
           bbox: bounds,
           signal: controller.signal,
+          limit: MAX_BUILDINGS,
         })
 
-        if (!live || (filled.filled === 0 && !filled.note)) return
-        setLoaded({ key: bboxKey, features: filled.features, total, geotiff: filled })
+        if (!live || (filled.filled === 0 && filled.added === 0 && !filled.note)) return
+        setLoaded({
+          key: bboxKey,
+          features: filled.features,
+          // The endpoint's own total says nothing about footprints it never
+          // had a row for, and "312 of 40" in the caption reads as a bug.
+          total: Math.max(total, filled.features.length),
+          geotiff: filled,
+        })
       } catch (cause) {
         if (cause.name === 'AbortError' || !live) return
         setLoaded({ key: bboxKey, features: [], total: 0, geotiff: null })

@@ -108,6 +108,88 @@ export function ringToLatLngs(ring) {
     return (ring ?? []).map(([lon, lat]) => [lat, lon])
 }
 
+/**
+ * The server's own MAX_POLYGON_VERTICES, mirrored so a limit is felt while
+ * drawing — or while a hull is derived — rather than reported after a failed
+ * submit.
+ */
+export const MAX_POLYGON_VERTICES = 1000
+
+/**
+ * The convex hull of [[lon, lat], ...] points, by Andrew's monotone chain.
+ *
+ * Returns an *open* ring, the same shape a drawn outline has: the first
+ * position is not repeated at the end, because the server closes it.
+ * Collinear points are dropped — three points on a line enclose no area, and
+ * PostGIS would reject the result anyway.
+ *
+ * `[]` when fewer than three corners survive, which is the caller's signal
+ * that these photos cannot describe an area: every photo at one spot, two
+ * spots, or a straight flight line.
+ *
+ * The hull is computed in raw lon/lat, so a set of photos straddling the
+ * antimeridian produces a ring wrapped the long way round the planet. The
+ * server's MAX_POLYGON_AREA_M2 check rejects that with a readable message
+ * rather than storing it — worth knowing, not worth projecting for.
+ */
+export function convexHull(points) {
+    const unique = [...new Map(
+        (points ?? [])
+            .filter((point) => Array.isArray(point) && point.length === 2)
+            .filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat))
+            .map((point) => [`${point[0]},${point[1]}`, point]),
+    ).values()]
+
+    if (unique.length < 3) {
+        return []
+    }
+
+    const sorted = [...unique].sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]))
+
+    // > 0 is a left turn. Dropping the `=== 0` case too is what removes
+    // collinear points from the hull.
+    const cross = (o, a, b) =>
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    const half = (ordered) => {
+        const chain = []
+
+        for (const point of ordered) {
+            while (chain.length >= 2 && cross(chain[chain.length - 2], chain[chain.length - 1], point) <= 0) {
+                chain.pop()
+            }
+            chain.push(point)
+        }
+
+        // The last point of each half is the first of the other, so both are
+        // dropped before the halves are joined.
+        chain.pop()
+        return chain
+    }
+
+    const hull = [...half(sorted), ...half([...sorted].reverse())]
+
+    return hull.length >= 3 ? hull : []
+}
+
+/** The arithmetic mean of [[lon, lat], ...] points, or null for an empty list. */
+export function meanPoint(points) {
+    const valid = (points ?? []).filter(
+        (point) => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]),
+    )
+
+    if (valid.length === 0) {
+        return null
+    }
+
+    const [lonSum, latSum] = valid.reduce(
+        (total, [lon, lat]) => [total[0] + lon, total[1] + lat],
+        [0, 0],
+    )
+
+    return [lonSum / valid.length, latSum / valid.length]
+}
+
 /** The 5-stop terrain LUT `scripts/gis/gis_common.py` colourises rasters with. */
 export const TERRAIN_RAMP = ['#2c5e8f', '#3f8f6e', '#c9c06a', '#a4693f', '#f2f2f2']
 

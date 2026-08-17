@@ -60,9 +60,12 @@ and runs on Modal — reference only.)
 - `readGpsPoints` runs a bounded worker pool with the same shape as
   `uploadFilesInBatches` — claim-an-index workers over one shared cursor. A
   file with no EXIF yields `null`, not an error; a file that fails to parse is
-  collected, not thrown, so one bad photo cannot sink the scan.
+  caught, not thrown, so one bad photo cannot sink the scan. It returns
+  `{ [key]: [lon, lat] | null }` with an entry for *every* file, which is what
+  tells "scanned, has none" apart from "not scanned yet".
 - `fileKey` is `name:size`, matching the key `addFiles` already dedupes on, so
-  a file is never scanned twice.
+  a file is never scanned twice. `addFiles` adopts the helper in place of its
+  inline template string.
 
 **`src/gis/gisGeo.js`** — two helpers next to `ringToLatLngs`, which already
 works unchanged on a bare point list:
@@ -108,20 +111,28 @@ Everything else stays — the GIS layer overlays, the pane order, the basemap
 segmented control, and the `gv-gis-map` root class that pulls in the dark
 Leaflet restyle.
 
-**`src/components/Upload.jsx`** — `newPolygon` is replaced by an
-`outlineSource` (`'photos' | 'point' | 'draw'`) plus `drawnPolygon`, with
-`gpsByFile`, `gpsScanning` and `sourcePinned` alongside.
+**`src/components/Upload.jsx`** — `newPolygon` is replaced by `drawnPolygon`
+plus `chosenSource` (`'photos' | 'point' | 'draw' | null`), with `gpsByFile`
+and `gpsScanning` alongside.
 
-- An effect on `files` scans any file whose key is not already in `gpsByFile`,
-  with the same `active` cancellation flag as the targets effect.
+- An effect on `files` scans any file whose key is not already in `gpsByFile`.
+  Deliberately *not* cancelled when `files` changes, unlike the targets fetch:
+  a scan of 300 photos easily outlives a second drop, and its results are keyed
+  and additive, so discarding them to start over would be pure waste. A ref of
+  in-flight keys is what stops a file being read twice.
 - `photoPoints` / `photoHull` / `photoMean` are memos derived from the *current*
   file list, not a snapshot — which is what makes deleting an outlier reshape
-  the hull. `activeRing` and `activePoint` fall out of `outlineSource`.
-- Auto-select sets the source to `photos` once the hull has three corners, but
-  only while `!sourcePinned && drawnPolygon.length === 0`: a drawing already in
-  progress is never overwritten, and any explicit click pins the choice.
-- `photos` is disabled below three hull corners, `point` without a mean; if the
-  active source stops being available the form falls back to `draw`.
+  the hull.
+- **The active source is derived, not stored.** `chosenSource` is only ever what
+  the user asked for; `outlineSource` is a memo resolving it against what the
+  photos currently support — `photos`/`point` fall back to `draw` when their
+  photos go away, and come back if the photos do. With no choice made yet
+  (`null`), the photo outline wins as soon as it exists, unless a drawing is
+  already under way. Storing this instead would mean two effects calling
+  setState to correct state that render can just compute, which is both a
+  cascading render and what `react-hooks/set-state-in-effect` flags.
+- `activeRing` and `activePoint` fall out of `outlineSource`. The `photos`
+  option is disabled below three hull corners, `point` without a mean.
 - Selecting `point` forces `targetType` to `node` and disables the Region
   button, per the API contract above. The Node/Region buttons keep resetting
   `selectedId` and now clear `drawnPolygon` only — the derived shapes follow
@@ -138,11 +149,14 @@ Leaflet restyle.
   its summary ("From photos · 7 corners", "Mean point · 44.42680, 26.10250",
   "Drawn · 4 corners", "Not set").
 
-**`src/App.css`** — three rules, appended to the bands they belong to.
-`.gv-coord-source` and
-`.gv-coord-picker-canvas[data-editable="0"] .leaflet-container {cursor: grab}`
-with the coordinate picker; `.gv-photo-gps` with the upload-page rules. Tokens
-throughout, `data-*` for state, nothing in `nocturne.css`.
+**`src/App.css`** — `.gv-coord-source` and the
+`[data-editable="0"]` cursor overrides with the coordinate picker;
+`.gv-photo-gps` with the upload-page rules. Plus a disabled state for
+`.seg-opt`, which the primitive has never needed before — a source with no
+geotagged photos behind it has to read as unavailable rather than merely
+unselected. Driven off `:has(input:disabled)` rather than a parallel
+`data-disabled`, so the real `disabled` attribute stays the one truth. Tokens
+throughout, nothing in `nocturne.css`.
 
 ## Out of scope
 

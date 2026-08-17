@@ -142,6 +142,7 @@ function toBody(feature, ring, key, map, zoom, breaks, targets) {
     name: properties.name ?? null,
     height,
     source,
+    drawn: properties.gv_drawn === true,
     volume: volumeOf(properties),
     coverage: properties.coverage ?? null,
     target: target ?? null,
@@ -206,6 +207,26 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
   // Rounded so a sub-metre pan does not re-fetch identical data.
   const bboxKey = bbox ? bbox.map((value) => value.toFixed(5)).join(',') : null
 
+  /**
+   * Every drawn outline as a measurable feature.
+   *
+   * A splat's subject is not always a building. `gis_worker._measure_drawn`
+   * measures these against LiDAR — and returns None for any other layer type —
+   * so on a GeoTIFF-only library nothing ever gives them a height, and they
+   * stay the flat patch the user drew. Sending them through the same pass as
+   * the footprints is what puts a volume on them.
+   *
+   * `gv_drawn` rather than `source: 'drawn'`, which is the backend's marker for
+   * the same thing: `source` is also a real OSM tag, and a footprint carrying
+   * `source=survey` must not be mistaken for an outline someone drew.
+   */
+  const outlines = useMemo(() => targets.flatMap((target) => target.rings.map((ring, part) => ({
+    type: 'Feature',
+    id: `drawn-${target.key}-${part}`,
+    geometry: { type: 'Polygon', coordinates: [ring] },
+    properties: { name: target.name, gv_drawn: true, height_m: null },
+  }))), [targets])
+
   // Zoomed out too far, the last fetch's features are kept in state but not
   // drawn. Clearing them here instead would be a synchronous setState in an
   // effect — a cascading render — and would also mean a re-fetch every time you
@@ -242,7 +263,7 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
         // hands out a fresh array on every moveend, so depending on it would
         // re-fetch after a pan too small to change the rounded key.
         const bounds = bboxKey.split(',').map(Number)
-        const filled = await fillHeightsFromGeotiff(found, {
+        const filled = await fillHeightsFromGeotiff([...found, ...outlines], {
           apiBaseUrl,
           bbox: bounds,
           signal: controller.signal,
@@ -254,8 +275,9 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
           key: bboxKey,
           features: filled.features,
           // The endpoint's own total says nothing about footprints it never
-          // had a row for, and "312 of 40" in the caption reads as a bug.
-          total: Math.max(total, filled.features.length),
+          // had a row for, and "312 of 40" in the caption reads as a bug. Drawn
+          // outlines are counted separately and stay out of it.
+          total: Math.max(total, filled.features.filter((f) => !f.properties?.gv_drawn).length),
           geotiff: filled,
         })
       } catch (cause) {
@@ -271,7 +293,7 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
       live = false
       controller.abort()
     }
-  }, [active, apiBaseUrl, bboxKey, zoom, onStatus])
+  }, [active, apiBaseUrl, bboxKey, outlines, zoom, onStatus])
 
   const features = loaded.features
 
@@ -282,10 +304,23 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
     // own set. Both are data-driven, so the same building can change class as
     // you pan — the alternative, fixed thresholds, collapses a village and a
     // city centre into one colour.
-    const breaks = volumeBreaks(features.map((feature) => volumeOf(feature.properties)))
+    //
+    // Drawn outlines are excluded, exactly as they are in the viewer's own
+    // quartiles: one region can enclose a whole district, and letting its
+    // volume into the breaks would push every real building down a class.
+    const breaks = volumeBreaks(features
+      .filter((feature) => !feature.properties?.gv_drawn)
+      .map((feature) => volumeOf(feature.properties)))
 
     const built = []
     for (const feature of features) {
+      // An unmeasured outline is left to SplatMap, which already draws it as a
+      // flat clickable polygon. Drawing it here too would only double the fill.
+      // Once it has a height there is something to add: the walls and the roof
+      // that turn that same polygon into a volume.
+      const height = feature.properties?.height_m
+      if (feature.properties?.gv_drawn && !(height > 0)) continue
+
       outerRings(feature.geometry).forEach((ring, index) => {
         const body = toBody(feature, ring, `${feature.id}-${index}`, map, zoom, breaks, targets)
         if (body) built.push(body)
@@ -306,18 +341,26 @@ function MapBuildings({ apiBaseUrl, onStatus, targets = [], onOpen }) {
   const fresh = active && loaded.key === bboxKey
   useEffect(() => {
     if (!fresh) return
+    // Buildings and drawn outlines are counted apart. They answer different
+    // questions — "how much of this neighbourhood is measured" versus "does my
+    // splat have a height" — and one number covering both answers neither.
+    const buildings = bodies.filter((body) => !body.drawn)
+
     onStatus({
       kind: 'ok',
-      shown: bodies.length,
+      shown: buildings.length,
       total: loaded.total,
-      measured: bodies.filter((body) => body.measured).length,
+      measured: buildings.filter((body) => body.measured).length,
       // Counted off the drawn bodies rather than taken from the pass's own
       // tally: the pass measures every footprint it was handed, while these are
       // the ones that survived into geometry.
       geotiff: bodies.filter((body) => body.source === 'geotiff').length,
+      // Only measured outlines reach `bodies` at all, so this is the count of
+      // splats that now have a volume rather than a flat patch.
+      outlines: bodies.length - buildings.length,
       groundFromSurface: loaded.geotiff?.groundFromSurface ?? false,
       geotiffNote: loaded.geotiff?.note ?? null,
-      splats: bodies.filter((body) => body.target).length,
+      splats: buildings.filter((body) => body.target).length,
     })
   }, [bodies, fresh, loaded.total, loaded.geotiff, onStatus])
 

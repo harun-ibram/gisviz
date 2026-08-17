@@ -229,12 +229,24 @@ const buildBuildingMesh = (features, drawnFeatures = []) => {
   byClass.forEach((geometries, index) => addBatch(geometries, BUILDING_COLOURS[index], 1))
   addBatch(unmeasured, NO_DATA_COLOUR, 0.55)
 
-  // ---- areas the user drew, with no elevation behind them -----------------
-  // Flat, not extruded: the ask was to mark the surface, not to guess a height.
+  // ---- areas the user drew --------------------------------------------------
+  //
+  // Extruded where a surface measured them, flat where nothing did. This used
+  // to be unconditionally flat, on the reasoning that the ask was to mark the
+  // surface rather than guess a height — but a measured outline is not a guess,
+  // and a splat whose subject is a monument, a yard or a stretch of street was
+  // left with no volume at all however much elevation data had been uploaded.
+  // The flat patch is still what an unmeasured outline gets, for exactly the
+  // original reason.
   const patches = []
+  const solids = []
   let drawn = 0
+  let drawnMeasured = 0
 
   for (const feature of drawnFeatures) {
+    const height = feature.properties?.height_m
+    const hasHeight = typeof height === 'number' && height > 0
+
     for (const ring of outerRings(feature.geometry)) {
       if (ring.length < 4) continue
 
@@ -246,37 +258,54 @@ const buildBuildingMesh = (features, drawnFeatures = []) => {
         else shape.lineTo(east, north)
       })
 
-      const geometry = new THREE.ShapeGeometry(shape)
-      geometry.rotateX(-Math.PI / 2)
-      // 2 cm off the ground so it does not z-fight with the base faces of any
-      // extrusion sitting on the same spot.
-      geometry.translate(0, 0.02, 0)
-      patches.push(geometry)
+      if (hasHeight) {
+        const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false })
+        geometry.rotateX(-Math.PI / 2)
+        solids.push(geometry)
+        drawnMeasured += 1
+      } else {
+        const geometry = new THREE.ShapeGeometry(shape)
+        geometry.rotateX(-Math.PI / 2)
+        // 2 cm off the ground so it does not z-fight with the base faces of any
+        // extrusion sitting on the same spot.
+        geometry.translate(0, 0.02, 0)
+        patches.push(geometry)
+      }
+
       drawn += 1
     }
   }
 
-  if (patches.length > 0) {
-    const merged = mergeGeometries(patches, false)
-    patches.forEach((geometry) => geometry.dispose())
-    if (merged) {
-      // MeshBasic, not Standard: a patch lying on the ground has no business
-      // being lit, and shading it would read as a surface with relief.
-      group.add(new THREE.Mesh(merged, new THREE.MeshBasicMaterial({
-        color: new THREE.Color(BUILDING_COLOURS[0]),
-        transparent: true,
-        opacity: 0.28,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      })))
-      // The outline at full opacity is what keeps it legible at grazing angles
-      // on a dark stage; the translucent fill alone disappears.
-      group.add(new THREE.LineSegments(
-        new THREE.EdgesGeometry(merged),
-        new THREE.LineBasicMaterial({ color: new THREE.Color(BUILDING_COLOURS[0]) }),
-      ))
-    }
+  /** Translucent volume plus a full-opacity wireframe, merged into two draws. */
+  const addDrawnBatch = (geometries, opacity, doubleSided) => {
+    if (geometries.length === 0) return
+    const merged = mergeGeometries(geometries, false)
+    geometries.forEach((geometry) => geometry.dispose())
+    if (!merged) return
+
+    // MeshBasic, not Standard: a drawn area is an annotation, not a surface
+    // with relief, and shading it would make it read as measured geometry.
+    group.add(new THREE.Mesh(merged, new THREE.MeshBasicMaterial({
+      color: new THREE.Color(BUILDING_COLOURS[0]),
+      transparent: true,
+      opacity,
+      side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+      // Never occludes the splat it encloses — the whole point is to look
+      // through it at what was captured inside.
+      depthWrite: false,
+    })))
+    // The outline at full opacity is what keeps it legible at grazing angles
+    // on a dark stage; the translucent fill alone disappears.
+    group.add(new THREE.LineSegments(
+      new THREE.EdgesGeometry(merged),
+      new THREE.LineBasicMaterial({ color: new THREE.Color(BUILDING_COLOURS[0]) }),
+    ))
   }
+
+  addDrawnBatch(patches, 0.28, true)
+  // Fainter than the flat patch: a box has four faces between the eye and the
+  // splat inside it, and at 0.28 each they stack into an opaque block.
+  addDrawnBatch(solids, 0.14, false)
 
   const halfWidth = ((maxLon - minLon) * metresPerLon) / 2
   const halfDepth = ((maxLat - minLat) * METRES_PER_DEGREE_LAT) / 2
@@ -288,6 +317,7 @@ const buildBuildingMesh = (features, drawnFeatures = []) => {
     fromGeotiff,
     total: features.length,
     drawn,
+    drawnMeasured,
   }
 }
 
@@ -1053,13 +1083,32 @@ const isTypingTarget = (target) =>
           // there is no cheap way to add the heights afterwards — waiting for
           // the raster read here is the price of not extruding a building
           // twice.
-          const filled = await fillHeightsFromGeotiff(collection.features ?? [], { apiBaseUrl })
+          //
+          // The drawn outline rides along in the same call. It is measured the
+          // same way and against the same window, and one pass over one raster
+          // read is the whole reason to send them together.
+          const outlines = drawnFeaturesRef.current.map((feature, index) => ({
+            type: 'Feature',
+            id: `drawn-${index}`,
+            geometry: feature.geometry,
+            properties: { gv_drawn: true, height_m: null },
+          }))
+
+          const filled = await fillHeightsFromGeotiff(
+            [...(collection.features ?? []), ...outlines],
+            { apiBaseUrl },
+          )
           if (!active) return
 
           const scene = sceneRef.current
           if (!scene) return
 
-          const built = buildBuildingMesh(filled.features, drawnFeaturesRef.current)
+          // Split back apart: the two are extruded by different rules and
+          // counted in different places.
+          const measuredOutlines = filled.features.filter((f) => f.properties?.gv_drawn)
+          const footprints = filled.features.filter((f) => !f.properties?.gv_drawn)
+
+          const built = buildBuildingMesh(footprints, measuredOutlines)
           if (!built) {
             setBuildingsInfo({ kind: 'empty' })
             return
@@ -1075,6 +1124,7 @@ const isTypingTarget = (target) =>
             geotiffNote: filled.note,
             total: built.total,
             drawn: built.drawn,
+            drawnMeasured: built.drawnMeasured,
           })
           frameBuildings()
         } catch (fetchError) {
@@ -1339,7 +1389,11 @@ const isTypingTarget = (target) =>
                         ? `${buildingsInfo.fromGeotiff} from GeoTIFF${buildingsInfo.groundFromSurface ? ' (no DEM — ground from the surface)' : ''}`
                         : null,
                       buildingsInfo.geotiffNote,
-                      buildingsInfo.drawn ? `${buildingsInfo.drawn} drawn surface${buildingsInfo.drawn === 1 ? '' : 's'}` : null,
+                      buildingsInfo.drawn
+                        ? `${buildingsInfo.drawn} drawn surface${buildingsInfo.drawn === 1 ? '' : 's'}${
+                          buildingsInfo.drawnMeasured ? ` (${buildingsInfo.drawnMeasured} raised to a measured height)` : ''
+                        }`
+                        : null,
                       '1 unit = 1 m',
                       'not aligned to the splat',
                     ].filter(Boolean).join(' · ')

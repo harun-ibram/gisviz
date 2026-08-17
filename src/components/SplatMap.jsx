@@ -143,17 +143,27 @@ function SplatMap({ className = '' }) {
     if (!buildings) return []
     if (buildings.kind === 'zoom') return ['zoom in for building heights']
     if (buildings.kind === 'error') return [`buildings unavailable — ${buildings.message}`]
-    if (buildings.shown === 0) return ['no buildings measured here']
 
-    const clipped = buildings.total > buildings.shown ? ` of ${buildings.total}` : ''
-    const matched = buildings.splats > 0
-      ? ` · ${buildings.splats} ${buildings.splats === 1 ? 'is' : 'are'} yours`
-      : ''
-    // "measured", not "LiDAR": the same count now covers both surfaces, and
-    // the split is spelled out on the next line when there is one to spell.
-    const lines = [
-      `${buildings.measured}/${buildings.shown}${clipped} buildings with a measured height${matched}`,
-    ]
+    const lines = []
+
+    if (buildings.shown === 0) {
+      lines.push('no buildings measured here')
+    } else {
+      const clipped = buildings.total > buildings.shown ? ` of ${buildings.total}` : ''
+      const matched = buildings.splats > 0
+        ? ` · ${buildings.splats} ${buildings.splats === 1 ? 'is' : 'are'} yours`
+        : ''
+      // "measured", not "LiDAR": the same count now covers both surfaces, and
+      // the split is spelled out on the next line when there is one to spell.
+      lines.push(`${buildings.measured}/${buildings.shown}${clipped} buildings with a measured height${matched}`)
+    }
+
+    // Separate line, because a splat whose subject is not a building is the
+    // case this whole path exists for: without it the outline is drawn flat and
+    // the caption says nothing about why.
+    if (buildings.outlines > 0) {
+      lines.push(`${buildings.outlines} drawn ${buildings.outlines === 1 ? 'outline' : 'outlines'} raised to a measured height`)
+    }
 
     if (buildings.geotiff > 0) {
       lines.push(`${buildings.geotiff} measured against a GeoTIFF surface${

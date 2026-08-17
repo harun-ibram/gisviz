@@ -69,9 +69,11 @@ const MAX_WINDOW_CELLS = 6_000_000
 // past that it would be a visible stall and belongs in a worker.
 const MAX_FEATURES = 2000
 
-// A single footprint bigger than this is a digitising error (a whole district
-// tagged as one building), and rasterising it would freeze the tab.
-const MAX_FOOTPRINT_CELLS = 250_000
+// Samples taken per outline. A building footprint is far under this and is
+// rasterised cell for cell; a drawn region of several square kilometres is
+// strided down to fit, because a point-in-polygon per cell over millions of
+// them is seconds of frozen tab.
+const MAX_FOOTPRINT_SAMPLES = 40_000
 
 // Footprints are pulled straight from the OSM buildings layer's GeoJSON when
 // `/gis/buildings` has no rows. Same ceiling GisMap refuses to draw above: past
@@ -355,11 +357,19 @@ function ringAreaM2(ring, originLat) {
  * Cells covered by one ring, plus the cells of its surrounding ground ring.
  *
  * Pushes elevations into the caller's accumulators rather than returning them,
- * because a MultiPolygon's parts are measured as one building — the Python
- * hands the whole geometry to one geometry_mask, and splitting it here would
- * give a courtyard block four separate heights.
+ * because a MultiPolygon's parts are measured as one outline — the Python hands
+ * the whole geometry to one geometry_mask, and splitting it here would give a
+ * courtyard block four separate heights.
+ *
+ * Strides over anything too big to rasterise cell by cell. A building footprint
+ * is a few hundred cells and gets `step = 1`, exactly as before; a drawn region
+ * can be square kilometres, and a per-cell point-in-polygon over 4M of them
+ * would lock the tab for seconds. Percentiles over a regular subsample of a
+ * surface are the same percentiles, so the measurement degrades in resolution
+ * and not in correctness — and the alternative was refusing to measure the
+ * drawn outlines at all, which is the thing being fixed.
  */
-function accumulateRing(ring, dsmTile, groundTile, radius, sink) {
+function accumulateRing(ring, dsmTile, groundTile, radiusCells, sink) {
   const pixels = ring.map(([lon, lat]) => [colOf(dsmTile, lon), rowOf(dsmTile, lat)])
 
   let minX = Infinity
@@ -374,40 +384,55 @@ function accumulateRing(ring, dsmTile, groundTile, radius, sink) {
 
   if (!Number.isFinite(minX)) return
 
-  const x0 = Math.max(0, Math.floor(minX) - radius)
-  const x1 = Math.min(dsmTile.width, Math.ceil(maxX) + radius + 1)
-  const y0 = Math.max(0, Math.floor(minY) - radius)
-  const y1 = Math.min(dsmTile.height, Math.ceil(maxY) + radius + 1)
+  const x0 = Math.max(0, Math.floor(minX) - radiusCells)
+  const x1 = Math.min(dsmTile.width, Math.ceil(maxX) + radiusCells + 1)
+  const y0 = Math.max(0, Math.floor(minY) - radiusCells)
+  const y1 = Math.min(dsmTile.height, Math.ceil(maxY) + radiusCells + 1)
 
-  const width = x1 - x0
-  const height = y1 - y0
-  if (width <= 0 || height <= 0 || width * height > MAX_FOOTPRINT_CELLS) return
+  const spanX = x1 - x0
+  const spanY = y1 - y0
+  if (spanX <= 0 || spanY <= 0) return
+
+  // One sample per `step` cells on each axis, chosen so the sample grid fits
+  // the budget. sqrt because the budget is an area.
+  const step = Math.max(1, Math.ceil(Math.sqrt((spanX * spanY) / MAX_FOOTPRINT_SAMPLES)))
+  const width = Math.ceil(spanX / step)
+  const height = Math.ceil(spanY / step)
+  const half = Math.floor(step / 2)
+
+  // The ground ring is a fixed distance in metres, so it shrinks in sample
+  // units by the same factor the grid coarsens.
+  const radius = Math.max(1, Math.round(radiusCells / step))
+
+  // Full-resolution cell a sample stands for.
+  const colAt = (gx) => x0 + gx * step + half
+  const rowAt = (gy) => y0 + gy * step + half
 
   const inside = new Uint8Array(width * height)
   let insideCount = 0
 
-  for (let row = 0; row < height; row += 1) {
-    const centreY = y0 + row + 0.5
-    for (let col = 0; col < width; col += 1) {
-      if (ringContains(pixels, x0 + col + 0.5, centreY)) {
-        inside[row * width + col] = 1
+  for (let gy = 0; gy < height; gy += 1) {
+    const centreY = y0 + gy * step + step / 2
+    for (let gx = 0; gx < width; gx += 1) {
+      if (ringContains(pixels, x0 + gx * step + step / 2, centreY)) {
+        inside[gy * width + gx] = 1
         insideCount += 1
       }
     }
   }
 
-  // No cell centre fell inside: the building is smaller than one cell. The
+  // No sample centre fell inside: the footprint is smaller than one sample. The
   // Python re-runs the mask with all_touched for exactly this case rather than
-  // dropping the row, so take the cells the footprint's extent covers.
+  // dropping the row, so take the samples the footprint's extent covers.
   if (insideCount === 0) {
-    const tx0 = Math.max(x0, Math.floor(minX))
-    const tx1 = Math.min(x1, Math.ceil(maxX) + 1)
-    const ty0 = Math.max(y0, Math.floor(minY))
-    const ty1 = Math.min(y1, Math.ceil(maxY) + 1)
+    const gx0 = Math.max(0, Math.floor((Math.floor(minX) - x0) / step))
+    const gx1 = Math.min(width, Math.ceil((Math.ceil(maxX) + 1 - x0) / step))
+    const gy0 = Math.max(0, Math.floor((Math.floor(minY) - y0) / step))
+    const gy1 = Math.min(height, Math.ceil((Math.ceil(maxY) + 1 - y0) / step))
 
-    for (let row = ty0; row < ty1; row += 1) {
-      for (let col = tx0; col < tx1; col += 1) {
-        inside[(row - y0) * width + (col - x0)] = 1
+    for (let gy = gy0; gy < gy1; gy += 1) {
+      for (let gx = gx0; gx < gx1; gx += 1) {
+        inside[gy * width + gx] = 1
         insideCount += 1
       }
     }
@@ -415,17 +440,21 @@ function accumulateRing(ring, dsmTile, groundTile, radius, sink) {
 
   if (insideCount === 0) return
 
+  // Counted in samples, so `coverage` stays a fraction of what was looked at.
   sink.cells += insideCount
+  sink.rawCells += insideCount * step * step
 
-  for (let row = 0; row < height; row += 1) {
-    for (let col = 0; col < width; col += 1) {
-      if (!inside[row * width + col]) continue
-      const value = valueAt(dsmTile, x0 + col, y0 + row)
+  for (let gy = 0; gy < height; gy += 1) {
+    for (let gx = 0; gx < width; gx += 1) {
+      if (!inside[gy * width + gx]) continue
+      const col = colAt(gx)
+      const row = rowAt(gy)
+      const value = valueAt(dsmTile, col, row)
       if (Number.isFinite(value)) sink.roof.push(value)
 
       // Only meaningful with a real DEM: on the DSM this reads the roof.
       if (groundTile !== dsmTile) {
-        const under = sampleAt(groundTile, lonAt(dsmTile, x0 + col), latAt(dsmTile, y0 + row))
+        const under = sampleAt(groundTile, lonAt(dsmTile, col), latAt(dsmTile, row))
         if (Number.isFinite(under)) sink.groundUnder.push(under)
       }
     }
@@ -433,11 +462,11 @@ function accumulateRing(ring, dsmTile, groundTile, radius, sink) {
 
   const ringMask = dilate(inside, width, height, radius)
 
-  for (let row = 0; row < height; row += 1) {
-    for (let col = 0; col < width; col += 1) {
-      const index = row * width + col
+  for (let gy = 0; gy < height; gy += 1) {
+    for (let gx = 0; gx < width; gx += 1) {
+      const index = gy * width + gx
       if (!ringMask[index] || inside[index]) continue
-      const value = sampleAt(groundTile, lonAt(dsmTile, x0 + col), latAt(dsmTile, y0 + row))
+      const value = sampleAt(groundTile, lonAt(dsmTile, colAt(gx)), latAt(dsmTile, rowAt(gy)))
       if (Number.isFinite(value)) sink.ground.push(value)
     }
   }
@@ -470,7 +499,7 @@ function measureFeature(feature, dsmTile, groundTile) {
   // nothing and leave no ground to sample.
   const radius = Math.max(1, Math.round(RING_M / Math.max(cellMetresX, cellMetresY)))
 
-  const sink = { cells: 0, roof: [], ground: [], groundUnder: [] }
+  const sink = { cells: 0, rawCells: 0, roof: [], ground: [], groundUnder: [] }
   for (const ring of rings) accumulateRing(ring, dsmTile, groundTile, radius, sink)
 
   if (sink.cells === 0) return null
@@ -486,7 +515,7 @@ function measureFeature(feature, dsmTile, groundTile) {
     volume_prism_m3: null,
     volume_dsm_m3: null,
     coverage: round(coverage, 4),
-    cell_count: sink.cells,
+    cell_count: sink.rawCells,
     height_source: null,
   }
 
@@ -529,7 +558,7 @@ function measureFeature(feature, dsmTile, groundTile) {
     volume_prism_m3: round(area * height, 3),
     volume_dsm_m3: round(meanRise * area, 3),
     coverage: round(coverage, 4),
-    cell_count: sink.cells,
+    cell_count: sink.rawCells,
     height_source: 'geotiff',
   }
 }

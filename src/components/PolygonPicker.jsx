@@ -20,7 +20,9 @@ import {
   ringToLatLngs,
   SPLAT_POINT,
 } from '../gis/gisGeo.js'
+import useDragSize from '../hooks/useDragSize.js'
 import { useGisLibrary } from '../hooks/useGisLibrary.js'
+import MapAutoResize from './MapAutoResize.jsx'
 import GisRasterOverlay from './gis/GisRasterOverlay.jsx'
 import GisVectorLayer from './gis/GisVectorLayer.jsx'
 
@@ -41,9 +43,16 @@ import GisVectorLayer from './gis/GisVectorLayer.jsx'
 // Six decimals is ~0.1 m, past the point where a click could be more precise.
 const PRECISION = 6
 
-// GisMap refuses vector layers past 150k features and asks before 20k. This map
-// is a 220px picker, not the GIS workspace, so it just skips the heavy ones.
+// GisMap refuses vector layers past 150k features and asks before 20k. This is
+// a picker field, not the GIS workspace, so it just skips the heavy ones — the
+// user can resize it, but that does not make it somewhere to inspect 100k roads.
 const MAX_PICKER_FEATURES = 20_000
+
+// The picker opens at the height it used to be fixed at. The floor keeps a map
+// you can still aim at; the ceiling keeps it from swallowing the whole form.
+const HEIGHT_DEFAULT = 220
+const HEIGHT_MIN = 160
+const HEIGHT_MAX = 720
 
 // Close enough to read a roofline, far enough not to sit inside one building.
 const POINT_ZOOM = 17
@@ -121,6 +130,15 @@ function PolygonPicker({
   const [basemapId, setBasemapId] = useState('osm')
   const basemap = BASEMAPS[basemapId] ?? BASEMAPS.osm
 
+  // Drag the bar under the map to trade form height for map height. Everything
+  // below is in normal flow, so it just moves down.
+  const { size: mapHeight, handleProps } = useDragSize({
+    axis: 'y',
+    initial: HEIGHT_DEFAULT,
+    min: HEIGHT_MIN,
+    max: HEIGHT_MAX,
+  })
+
   // Same layers and the same visibility the GIS page uses — toggling here
   // toggles there, deliberately: one notion of "which layers am I looking at".
   const { layers, visibleLayerIds, toggleLayerVisibility, opacityByLayer } = useGisLibrary()
@@ -156,6 +174,7 @@ function PolygonPicker({
         className="gv-coord-picker-canvas"
         data-basemap={basemap.id}
         data-editable={editable ? '1' : '0'}
+        style={{ height: mapHeight }}
       >
         <MapContainer
           center={centre ? [centre.lat, centre.lon] : DEFAULT_CENTER}
@@ -170,6 +189,8 @@ function PolygonPicker({
             maxZoom={basemap.maxZoom}
             maxNativeZoom={basemap.maxNativeZoom}
           />
+          {/* The map is resizable, and Leaflet only watches the window. */}
+          <MapAutoResize />
           {/* Same pane names and z-order GisMap declares — the layer components
               attach to them by name, so they must exist here too. The drawing
               pane sits above both. */}
@@ -277,6 +298,12 @@ function PolygonPicker({
           ))}
         </MapContainer>
       </div>
+
+      <div
+        className="gv-resize-handle gv-resize-handle--y"
+        aria-label="Resize map"
+        {...handleProps}
+      />
 
       {layers?.length ? (
         <details className="gv-coord-layers">

@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import L from 'leaflet'
 import { CircleMarker, MapContainer, Polygon, TileLayer, Tooltip, useMap } from 'react-leaflet'
+import MapAutoResize from './MapAutoResize.jsx'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { collectCoordinatePairs } from './libraryUtils.jsx'
 import { BASEMAPS, DEFAULT_CENTER, DEFAULT_ZOOM } from '../gis/basemaps.js'
@@ -205,6 +206,7 @@ function SplatMap({ className = '' }) {
           className="gv-leaflet"
           scrollWheelZoom
         >
+          <MapAutoResize />
           <TileLayer
             url={basemap.url}
             attribution={basemap.attribution}

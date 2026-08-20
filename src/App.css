@@ -606,8 +606,11 @@
   margin-top: var(--space-3);
 }
 
+/* The height is the default only — PolygonPicker drives it from an inline
+   style once mounted, so the drag handle under the map can change it. */
 .gv-coord-picker-canvas {
   height: 220px;
+  min-height: 160px;
   border: 1px solid var(--color-divider);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -936,6 +939,12 @@
     grid-template-columns: 1fr;
   }
 
+  /* The stage grid drops to one column below (with !important, to beat the
+     inline template), so there is no longer a split to drag. */
+  .gv-resize-handle--x {
+    display: none;
+  }
+
   .gv-detail-rail {
     position: static;
   }
@@ -1070,6 +1079,12 @@
 @media (max-width: 860px) {
   .gv-body {
     grid-template-columns: 1fr;
+  }
+
+  /* Vertical space is the scarce thing on a phone; a resizable map field is
+     not worth the touch target. */
+  .gv-resize-handle--y {
+    display: none;
   }
 
   .gv-sidebar {
@@ -1661,6 +1676,80 @@
     height: 380px;
   }
 }
+
+/* — resize handles —
+   Shared by the upload page's map field (horizontal bar, resizes height) and
+   the visualizer's stage/map splitter (vertical bar, resizes width). Both are
+   driven by src/hooks/useDragSize.js. */
+.gv-resize-handle {
+  position: relative;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  /* Without this the browser claims the gesture for scrolling and the pointer
+     events never arrive on a touchscreen. */
+  touch-action: none;
+}
+
+/* The visible grip. The handle's own box is the hit area and stays invisible,
+   so the affordance can be small without being hard to grab. */
+.gv-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: var(--color-divider);
+  transition: background 120ms ease;
+}
+
+.gv-resize-handle--y {
+  /* A flex item in .gv-gis-map's column — it must not be squeezed. */
+  flex: none;
+  width: 100%;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.gv-resize-handle--y::after {
+  width: 48px;
+  height: 3px;
+}
+
+.gv-resize-handle--x {
+  height: 100%;
+  cursor: ew-resize;
+  /* Its grid track is only 6px, so reach into the gap either side rather than
+     asking the user to hit a 6px target. */
+  margin: 0 calc(var(--space-3) * -1);
+  padding: 0 var(--space-3);
+}
+
+.gv-resize-handle--x::after {
+  width: 3px;
+  height: 32px;
+}
+
+.gv-resize-handle:hover::after,
+.gv-resize-handle:focus-visible::after,
+.gv-resize-handle[data-dragging="1"]::after {
+  background: var(--color-accent);
+}
+
+/* It is in the tab order — arrow keys resize — so it needs a focus ring. */
+.gv-resize-handle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Set on <body> for the duration of a drag: the pointer is captured and will
+   stray off the handle, and without this the cursor flickers and the drag
+   selects text across the page. */
+body.gv-resizing { user-select: none; }
+body.gv-resizing--x { cursor: ew-resize; }
+body.gv-resizing--y { cursor: ns-resize; }
 
 /* — Leaflet dark restyle —
    Scoped under .gv-gis-map, and last in the file so it beats leaflet.css (which

@@ -9,6 +9,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
 import SplatMap from './SplatMap.jsx'
+import useDragSize from '../hooks/useDragSize.js'
 import { getFileExtension, getFileName } from '../utils.jsx'
 import { IconClose, IconDownload, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx'
 
@@ -43,6 +44,16 @@ const MAX_PITCH = Math.PI / 2 - 0.01
 const CLICK_SLOP_PX = 4
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+// Location panel sizing. It opens at the width it used to be fixed at; the
+// floor keeps the legend and basemap toggle readable, and the fraction caps it
+// against the row so the splat always keeps the larger share.
+const MAP_WIDTH_DEFAULT = 320
+const MAP_WIDTH_MIN = 240
+const MAP_WIDTH_MAX_FRACTION = 0.6
+
+// Its own grid track, so the panes stay flush against the gap either side.
+const SPLITTER_WIDTH = 6
 
 // How the splat is oriented when it loads. Degrees rather than radians because
 // that is what the sliders show; nerfstudio exports Y-down, hence the 180° roll
@@ -384,6 +395,19 @@ const isTypingTarget = (target) =>
     // where the scene opens, and the number grows as you get closer.
     const [zoom, setZoom] = useState(1)
     const [mapOpen, setMapOpen] = useState(true)
+    // The splitter measures itself against the row it lives in, so the map can
+    // never take so much width that the splat has nowhere to render.
+    const stageGridRef = useRef(null)
+    const { size: mapWidth, handleProps: mapHandleProps } = useDragSize({
+      axis: 'x',
+      // The map panel sits after the handle, so dragging right must shrink it.
+      invert: true,
+      initial: MAP_WIDTH_DEFAULT,
+      min: MAP_WIDTH_MIN,
+      max: () => (stageGridRef.current
+        ? stageGridRef.current.clientWidth * MAP_WIDTH_MAX_FRACTION
+        : MAP_WIDTH_DEFAULT * 2),
+    })
     const [rotateOpen, setRotateOpen] = useState(false)
     const rotateOpenRef = useRef(false)
     const [rotation, setRotation] = useState(DEFAULT_ROTATION)
@@ -1358,7 +1382,15 @@ const isTypingTarget = (target) =>
 
         <div
           className="gv-stage-grid"
-          style={{ gridTemplateColumns: mapOpen ? 'minmax(0,1fr) 320px' : 'minmax(0,1fr)' }}
+          ref={stageGridRef}
+          style={{
+            // The min() is what survives a window shrink after a drag: CSS caps
+            // the track without a resize listener, and the JS max above is only
+            // there to keep the handle under the cursor mid-drag.
+            gridTemplateColumns: mapOpen
+              ? `minmax(0,1fr) ${SPLITTER_WIDTH}px min(${mapWidth}px, ${MAP_WIDTH_MAX_FRACTION * 100}%)`
+              : 'minmax(0,1fr)',
+          }}
         >
           <div className="gv-stage-panel" aria-label="Spark splat preview" onWheel={handleScroll}>
             <div className="gv-stage" ref={stageRef} />
@@ -1484,6 +1516,14 @@ const isTypingTarget = (target) =>
               )}
             </div>
           </div>
+
+          {mapOpen ? (
+            <div
+              className="gv-resize-handle gv-resize-handle--x"
+              aria-label="Resize map panel"
+              {...mapHandleProps}
+            />
+          ) : null}
 
           {mapOpen ? (
             <div className="gv-map-panel">

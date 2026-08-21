@@ -25,6 +25,7 @@ import { useGisLibrary } from '../hooks/useGisLibrary.js'
 import MapAutoResize from './MapAutoResize.jsx'
 import GisRasterOverlay from './gis/GisRasterOverlay.jsx'
 import GisVectorLayer from './gis/GisVectorLayer.jsx'
+import { IconPencil, IconRedo, IconUndo } from './icons.jsx'
 
 /**
  * Show the outline of a target, and — when it is being drawn rather than
@@ -168,6 +169,27 @@ function PolygonPicker({
     onChange([...value, vertex])
   }
 
+  /**
+   * Redo is anchored to the ring it belongs to: `base` is the array identity
+   * that was on screen when the stack was last pushed. Any other route to a new
+   * ring — a corner added, the source switched back to the photos — leaves
+   * `base` behind, and the stack is ignored rather than replaying a shape that
+   * no longer follows from what is drawn.
+   */
+  const [redo, setRedo] = useState({ base: null, stack: [] })
+  const canRedo = redo.base === value && redo.stack.length > 0
+
+  const replaceRing = (next) => {
+    setRedo({ base: next, stack: [...(redo.base === value ? redo.stack : []), value] })
+    onChange(next)
+  }
+
+  const redoRing = () => {
+    const restored = redo.stack[redo.stack.length - 1]
+    setRedo({ base: restored, stack: redo.stack.slice(0, -1) })
+    onChange(restored)
+  }
+
   return (
     <div className="gv-gis-map gv-coord-picker">
       <div
@@ -297,6 +319,49 @@ function PolygonPicker({
             />
           ))}
         </MapContainer>
+
+        {/* Sits over the map, outside .leaflet-container: a click on Undo must
+            not also land a corner underneath it. Only for a ring the user owns
+            — a photo-derived outline follows the photos instead. */}
+        {editable ? (
+          <div className="gv-map-dock">
+            <span className="gv-map-dock-badge" aria-hidden="true">
+              <IconPencil size={14} />
+            </span>
+            <span className="gv-map-dock-title">Annotation</span>
+
+            <button
+              type="button"
+              className="gv-map-dock-btn"
+              aria-label="Undo last corner"
+              title="Undo last corner"
+              disabled={value.length === 0}
+              onClick={() => replaceRing(value.slice(0, -1))}
+            >
+              <IconUndo />
+            </button>
+
+            <button
+              type="button"
+              className="gv-map-dock-btn"
+              aria-label="Redo"
+              title="Redo"
+              disabled={!canRedo}
+              onClick={redoRing}
+            >
+              <IconRedo />
+            </button>
+
+            <button
+              type="button"
+              className="gv-map-dock-clear"
+              disabled={value.length === 0}
+              onClick={() => replaceRing([])}
+            >
+              Clear
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div
@@ -357,30 +422,10 @@ function PolygonPicker({
                   : `${value.length} corners · centre ${centre.lat.toFixed(5)}, ${centre.lon.toFixed(5)}`}
         </span>
 
+        {/* Undo / Redo / Clear moved onto the map itself — see the dock above.
+            What is left under it is the choice of basemap, which is about the
+            map rather than the shape. */}
         <div className="gv-coord-picker-actions">
-          {/* Undo and Clear edit the ring, so they only exist when there is a
-              ring to edit — a derived shape follows the photos instead. */}
-          {editable ? (
-            <>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={value.length === 0}
-                onClick={() => onChange(value.slice(0, -1))}
-              >
-                Undo
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={value.length === 0}
-                onClick={() => onChange([])}
-              >
-                Clear
-              </button>
-            </>
-          ) : null}
-
           <div className="seg" role="radiogroup" aria-label="Basemap">
             {Object.values(BASEMAPS).map((entry) => (
               <label key={entry.id} className="seg-opt">

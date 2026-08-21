@@ -1,0 +1,83 @@
+/* Aurora — the palette the app ships.
+
+   nocturne.css is a vendored design-system export whose header says to retune
+   the source rather than edit the tokens in place, so the colour ramps are
+   re-pointed here instead: same token names, deep-navy surfaces and a cyan
+   accent. Imported after nocturne and before App.css, so the component rules
+   in both files pick these values up with no extra specificity. */
+
+:root {
+  /* Page, header/rail, and panel. Three steps, all within a hair of black —
+     the design leans on hairlines and the accent for separation, not on
+     lightening surfaces. */
+  --color-bg: #070a12;
+  --color-bg-raised: #0a0e18;
+  --color-surface: #0e1420;
+  --color-surface-2: #131a28;
+
+  --color-text: #dbe4f2;
+  --color-accent: #4cc4f7;
+  --color-accent-2: #2ed3b7;
+
+  /* Cool rather than neutral: a grey hairline reads brown against this bg. */
+  --color-divider: color-mix(in srgb, #7fa3c8 16%, transparent);
+
+  --color-neutral-100: #f2f6fb;
+  --color-neutral-200: #dfe7f2;
+  --color-neutral-300: #c3cede;
+  --color-neutral-400: #97a5ba;
+  --color-neutral-500: #6f7d92;
+  --color-neutral-600: #4f5b6e;
+  --color-neutral-700: #38414f;
+  --color-neutral-800: #222a37;
+  --color-neutral-900: #131924;
+
+  --color-accent-100: #e9f8ff;
+  --color-accent-200: #c2ecff;
+  --color-accent-300: #8fdcff;
+  --color-accent-400: #4cc4f7;
+  --color-accent-500: #29a8e0;
+  --color-accent-600: #1c86b8;
+  --color-accent-700: #17658b;
+  --color-accent-800: #123f57;
+  --color-accent-900: #0d2b3b;
+
+  --color-accent-2-100: #e6fbf6;
+  --color-accent-2-200: #bff3e7;
+  --color-accent-2-300: #86e6d1;
+  --color-accent-2-400: #2ed3b7;
+  --color-accent-2-500: #1fae96;
+  --color-accent-2-600: #178a78;
+  --color-accent-2-700: #14685b;
+  --color-accent-2-800: #10473f;
+  --color-accent-2-900: #0b2e29;
+
+  --color-section: #0d1b2e;
+  --color-section-glow: #12304d;
+  --color-section-ghost: #1b4b74;
+
+  /* Tighter than nocturne's: the design draws rectangles, not pills. */
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Rings first, then the drop — the ring is what reads at this darkness. */
+  --shadow-sm: 0 0 0 1px #1b2331;
+  --shadow-md: 0 0 0 1px #222b3a, 0 10px 30px rgba(0, 0, 0, 0.62);
+  --shadow-lg: 0 0 0 1px #2b3548, 0 24px 60px rgba(0, 0, 0, 0.72);
+
+  /* — additions, not overrides — */
+
+  /* Anything the backend measured — coordinates, paths, sizes — is set in
+     mono, so numbers line up column-wise down a list. */
+  --gv-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* Status tones. Used by the library rows and the job stepper. */
+  --gv-ok: #35d39a;
+  --gv-warn: #f2b035;
+  --gv-idle: #7c8aa0;
+  --gv-danger: #ff6f6f;
+
+  /* The icon rail runs the full height of the window, left of the header. */
+  --gv-rail-w: 58px;
+}

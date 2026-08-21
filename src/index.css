@@ -2,6 +2,8 @@
    therefore later) win at equal specificity without !important. */
 @import 'leaflet/dist/leaflet.css';
 @import './theme/nocturne.css';
+/* After nocturne: re-points its colour ramp without editing the vendored file. */
+@import './theme/aurora.css';
 
 :root {
   color-scheme: dark;

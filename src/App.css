@@ -1,16 +1,21 @@
 @keyframes gv-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 
-/* — app shell — */
+/* — app shell —
+   Two columns: the icon rail, and everything else. The header lives in the
+   right-hand column rather than above both, so the rail runs the full height of
+   the window the way the design has it. */
 .gv-shell {
   height: 100vh;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: var(--gv-rail-w) minmax(0, 1fr);
   overflow: hidden;
+  background: var(--color-bg);
 }
 
 .gv-body {
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
 }
 
@@ -27,149 +32,175 @@
   border: 3px solid var(--color-bg);
 }
 
+/* — icon rail —
+   Icon-only, so every target carries both a title attribute and a flyout label
+   built from data-label: the text nav it replaced is not allowed to cost the
+   name of a section. */
+.gv-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  /* The foot is left clear for the fixed auth button, which is a sibling of
+     the shell and cannot take part in this column's flow. */
+  padding: 11px 0 68px;
+  background: var(--color-bg-raised);
+  border-right: 1px solid var(--color-divider);
+}
+
+.gv-rail-brand,
+.gv-rail-link {
+  position: relative;
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+}
+
+.gv-rail-brand {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: #04121b;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent),
+    0 0 20px color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+.gv-rail-items {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.gv-rail-link {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  color: color-mix(in srgb, var(--color-text) 44%, transparent);
+}
+
+.gv-rail-link:hover {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.gv-rail-link--active {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+/* Rides the rail's own edge — the 38px button is centred in a 58px rail, so
+   -10px lands exactly on it. */
+.gv-rail-link--active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--color-accent);
+}
+
+.gv-rail-count {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--color-neutral-800);
+  color: var(--color-neutral-200);
+  font-family: var(--gv-mono);
+  font-size: 9px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.gv-rail-link--active .gv-rail-count {
+  background: var(--color-accent-800);
+  color: var(--color-accent-100);
+}
+
+.gv-rail-brand::after,
+.gv-rail-link::after {
+  content: attr(data-label);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 60;
+  padding: 4px 9px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 110ms ease;
+}
+
+.gv-rail-brand:hover::after,
+.gv-rail-brand:focus-visible::after,
+.gv-rail-link:hover::after,
+.gv-rail-link:focus-visible::after {
+  opacity: 1;
+}
+
 /* — header — */
 .gv-header {
   display: flex;
   align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-3) var(--space-6);
+  gap: var(--space-4);
+  height: 54px;
+  padding: 0 var(--space-6);
+  background: var(--color-bg-raised);
   border-bottom: 1px solid var(--color-divider);
 }
 
-.gv-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-right: var(--space-2);
-}
-
-.gv-brand-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-md);
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
-  color: var(--color-accent-200);
-}
-
-.gv-brand-name {
+.gv-header-title {
   font-family: var(--font-heading);
-  font-weight: var(--font-heading-weight);
-  font-size: 18px;
-  letter-spacing: -0.01em;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-neutral-200);
+  white-space: nowrap;
 }
 
-.gv-nav {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
+.gv-header-badge {
+  padding: 4px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent-200);
+  font-family: var(--gv-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.gv-nav-link {
-  color: color-mix(in srgb, var(--color-text) 62%, transparent);
-  text-decoration: none;
-  font-size: 14px;
-  padding: 4px 2px;
-  border-bottom: 2px solid transparent;
-}
-
-.gv-nav-link:hover { color: var(--color-text); }
-
-.gv-nav-link--active {
-  color: var(--color-text);
-  border-bottom-color: var(--color-accent);
-}
-
-.gv-header-meta {
+/* Where a page portals its own header control — see HeaderSlot. Empty on the
+   routes that have none, which is why it is margin-left:auto and not a gap. */
+.gv-header-slot {
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  min-width: 0;
 }
 
-.gv-dataset-label {
-  font-size: 12px;
-}
+.gv-header-slot .gv-search-wrap { width: min(390px, 38vw); }
 
-/* — sidebar — */
-.gv-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-6) var(--space-4);
-  border-right: 1px solid var(--color-divider);
-  min-height: 0;
-}
-
-.gv-side-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.gv-side-label {
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  padding: 0 12px 4px;
-}
-
-.gv-side {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  color: color-mix(in srgb, var(--color-text) 66%, transparent);
-  font-size: 14px;
-  border: 1px solid transparent;
-  background: transparent;
-  font-family: var(--font-body);
-  text-align: left;
-  text-decoration: none;
-}
-
-.gv-side:hover {
-  background: color-mix(in srgb, var(--color-text) 6%, transparent);
-  color: var(--color-text);
-}
-
-.gv-side--active {
-  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  color: var(--color-accent-200);
-  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
-}
-
-.gv-side--static { cursor: default; }
-.gv-side--static:hover { background: transparent; color: color-mix(in srgb, var(--color-text) 66%, transparent); }
-
-.gv-side-flex { flex: 1; }
-
-.gv-backend {
-  margin-top: auto;
-  padding: var(--space-4);
-  border: 1px solid var(--color-divider);
-  border-radius: 10px;
-  background: var(--color-surface);
-}
-
-.gv-backend-title {
-  font-size: 12px;
-  font-weight: 500;
-  margin-bottom: 4px;
-}
-
-.gv-backend-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: color-mix(in srgb, var(--color-text) 62%, transparent);
-}
+/* Live-status dot, shared by the auth button and the job rail. */
 
 .gv-pulse-dot {
   width: 8px;
@@ -609,6 +640,8 @@
 /* The height is the default only — PolygonPicker drives it from an inline
    style once mounted, so the drag handle under the map can change it. */
 .gv-coord-picker-canvas {
+  /* The annotation dock is absolutely positioned against this box. */
+  position: relative;
   height: 220px;
   min-height: 160px;
   border: 1px solid var(--color-divider);
@@ -660,7 +693,8 @@
   font-size: 12px;
 }
 
-/* Undo / Clear sit next to the basemap toggle under the drawing map. */
+/* What is left under the drawing map once Undo / Redo / Clear moved onto it:
+   the basemap toggle. */
 .gv-coord-picker-actions {
   display: flex;
   align-items: center;
@@ -1077,9 +1111,18 @@
 }
 
 @media (max-width: 860px) {
-  .gv-body {
-    grid-template-columns: 1fr;
+  /* The rail stays — it is icons only, and losing it would lose the nav. It
+     just gives back the eight pixels it can spare. */
+  .gv-shell {
+    --gv-rail-w: 50px;
   }
+
+  .gv-rail-link {
+    width: 34px;
+    height: 34px;
+  }
+
+  .gv-rail-link--active::before { left: -8px; }
 
   /* Vertical space is the scarce thing on a phone; a resizable map field is
      not worth the touch target. */
@@ -1087,9 +1130,18 @@
     display: none;
   }
 
-  .gv-sidebar {
+  .gv-header {
+    padding: 0 var(--space-4);
+    gap: var(--space-3);
+  }
+
+  /* The badge repeats a count the rail already carries; the search box is the
+     control, so it gets the row. */
+  .gv-header-badge {
     display: none;
   }
+
+  .gv-header-slot .gv-search-wrap { width: 100%; }
 
   .gv-library {
     padding: var(--space-6);
@@ -1830,11 +1882,13 @@ body.gv-resizing--y { cursor: ns-resize; }
    existing delete-confirm dialog. */
 .dialog-backdrop { z-index: 1100; }
 
-/* Sibling of .gv-shell, which is overflow:hidden and would clip this. */
+/* Sibling of .gv-shell, which is overflow:hidden and would clip this. Placed
+   to land at the foot of the icon rail: 10px + half of a 38px button is 29px,
+   which is the centre line of the 58px rail. */
 .gv-auth-corner {
   position: fixed;
-  left: var(--space-4);
-  bottom: var(--space-4);
+  left: 10px;
+  bottom: 12px;
   z-index: 1000;
   display: flex;
   flex-direction: column;
@@ -1844,6 +1898,10 @@ body.gv-resizing--y { cursor: ns-resize; }
 
 .gv-auth-fab {
   position: relative;
+  /* Matches a rail button, because that is the column it reads as part of. */
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-bg) 88%, transparent);
   backdrop-filter: blur(6px);
   box-shadow: var(--shadow-md);
@@ -1909,11 +1967,10 @@ body.gv-resizing--y { cursor: ns-resize; }
   font-size: 13px;
 }
 
-/* Below this the 236px sidebar is gone and the main column runs full width, so
-   the corner would sit over content rather than beside it. */
 @media (max-width: 860px) {
+  /* The rail narrows to 50px here; 10px + half of 30px keeps the button on
+     its centre line. */
   .gv-auth-corner {
-    left: var(--space-3);
     bottom: var(--space-3);
   }
 
@@ -1921,4 +1978,394 @@ body.gv-resizing--y { cursor: ns-resize; }
     width: 30px;
     height: 30px;
   }
+}
+
+/* — filled button —
+   nocturne's .btn-primary is an outline; the design's main action is a solid
+   slab of accent, so it gets its own modifier rather than a retuned primary
+   (the outline is still what the toolbars want). */
+.btn-solid {
+  padding-block: 9px;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #051119;
+  font-weight: 600;
+}
+
+.btn-solid:hover {
+  background: var(--color-accent-300);
+  border-color: var(--color-accent-300);
+}
+
+.btn-solid:active { background: var(--color-accent-500); }
+
+/* — library browser —
+   The one full-bleed page: list on the left, the selected record written out on
+   the right, each scrolling on its own. Deliberately not built on .gv-library /
+   .gv-library-grid — those are the padded page layout the upload and GIS pages
+   still use, and this is not that shape. */
+.gv-browser {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 372px;
+}
+
+.gv-browser-list {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4) 0 var(--space-8);
+}
+
+.gv-browser-group + .gv-browser-group { margin-top: var(--space-6); }
+
+.gv-browser-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-6) 8px;
+  font-family: var(--gv-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 42%, transparent);
+}
+
+.gv-browser-group-count { color: var(--color-accent-300); }
+
+.gv-browser-empty {
+  margin: 0;
+  padding: 14px var(--space-6);
+  font-size: 13px;
+}
+
+.gv-browser-error { margin: 0 var(--space-6) var(--space-4); }
+
+/* — library row — */
+.gv-lib-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  padding: 12px var(--space-6);
+  border: 0;
+  /* The selected row is marked on its leading edge, so the bar is always in
+     the box — a border that only appears when active would shift the row. */
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gv-lib-row + .gv-lib-row {
+  border-top: 1px solid color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.gv-lib-row:hover { background: color-mix(in srgb, var(--color-text) 4%, transparent); }
+
+.gv-lib-row[data-active="1"] {
+  border-left-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+
+/* Generated, not fetched: nothing in the API carries a preview image, and the
+   hue comes from the name — see hueFor in SplatBrowser.jsx. */
+.gv-lib-thumb {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 60px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--color-text) 10%, transparent);
+  background:
+    radial-gradient(120% 140% at 26% 16%,
+      hsl(var(--gv-thumb-hue) 72% 46% / 0.55), transparent 62%),
+    linear-gradient(150deg, hsl(var(--gv-thumb-hue) 52% 22%), #080c14 78%);
+  color: color-mix(in srgb, #ffffff 76%, transparent);
+}
+
+.gv-lib-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.gv-lib-row-name {
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gv-lib-row-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  font-family: var(--gv-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gv-meta-chip { color: color-mix(in srgb, var(--color-text) 60%, transparent); }
+
+.gv-meta-chip i {
+  font-style: normal;
+  color: color-mix(in srgb, var(--color-text) 38%, transparent);
+}
+
+.gv-status {
+  font-family: var(--gv-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gv-status[data-tone="ok"] { color: var(--gv-ok); }
+.gv-status[data-tone="warn"] { color: var(--gv-warn); }
+.gv-status[data-tone="idle"] { color: var(--gv-idle); }
+.gv-status[data-tone="danger"] { color: var(--gv-danger); }
+
+.gv-lib-row-coords {
+  font-family: var(--gv-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-accent-300);
+  white-space: nowrap;
+}
+
+/* — library detail panel — */
+.gv-lib-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-6);
+  border-left: 1px solid var(--color-divider);
+  background: var(--color-bg-raised);
+}
+
+.gv-lib-panel-title {
+  margin: 0;
+  font-size: 20px;
+  word-break: break-word;
+}
+
+.gv-lib-panel-lede {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--color-text) 66%, transparent);
+}
+
+.gv-lib-panel-empty {
+  margin: 0;
+  font-size: 13px;
+}
+
+.gv-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.gv-field-label,
+.gv-stat-label {
+  font-family: var(--gv-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.gv-field-value {
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.gv-field-path {
+  font-size: 12.5px;
+  color: var(--color-accent-300);
+  word-break: break-all;
+}
+
+.gv-mono { font-family: var(--gv-mono); }
+
+.gv-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.gv-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.gv-stat-value {
+  font-family: var(--gv-mono);
+  font-size: 15px;
+}
+
+.gv-lib-panel-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+/* .btn-block carries a top margin for the forms it was written for; in a
+   stack of actions the gap already does that job. */
+.gv-lib-panel-actions .btn-block { margin-top: 0; }
+
+.gv-lib-panel-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-divider);
+}
+
+.gv-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  font-size: 12.5px;
+}
+
+.gv-kv > :first-child { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.gv-kv > :last-child { text-align: right; word-break: break-word; }
+
+@media (max-width: 1100px) {
+  /* Below the split, the panel goes under the list and the whole page scrolls
+     as one — two independent scrollers in a narrow column is a trap. */
+  .gv-browser {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .gv-browser-list,
+  .gv-lib-panel {
+    overflow: visible;
+  }
+
+  .gv-lib-panel {
+    border-left: 0;
+    border-top: 1px solid var(--color-divider);
+  }
+}
+
+@media (max-width: 700px) {
+  .gv-lib-row {
+    grid-template-columns: 64px minmax(0, 1fr);
+    row-gap: 6px;
+    padding-inline: var(--space-4);
+  }
+
+  .gv-lib-thumb {
+    width: 64px;
+    height: 44px;
+  }
+
+  /* Under the name rather than beside it, so neither has to truncate. */
+  .gv-lib-row-coords { grid-column: 2; }
+
+  .gv-browser-group-head,
+  .gv-browser-empty,
+  .gv-browser-error { padding-inline: var(--space-4); }
+}
+
+/* — annotation dock —
+   The polygon picker's editing actions, floated over the foot of the map they
+   act on rather than stacked underneath it. Being a sibling of
+   .leaflet-container (not a child) is what keeps a click on Undo from also
+   landing a vertex on the map. */
+.gv-map-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  /* Leaflet's own layers top out at 800 (.leaflet-control); this has to clear
+     them to stay clickable. */
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 5px;
+  border: 1px solid color-mix(in srgb, var(--color-text) 16%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg) 86%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-md);
+}
+
+.gv-map-dock-badge {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: #051119;
+}
+
+.gv-map-dock-title {
+  padding-right: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.gv-map-dock-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--color-text) 18%, transparent);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.gv-map-dock-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.gv-map-dock-btn:disabled,
+.gv-map-dock-clear:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gv-map-dock-clear {
+  padding: 4px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-text) 18%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gv-map-dock-clear:hover:not(:disabled) {
+  border-color: var(--gv-danger);
+  color: var(--gv-danger);
 }

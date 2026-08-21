@@ -201,3 +201,32 @@ export function IconUngroup({ size = 15 }) {
     </svg>
   )
 }
+
+export function IconUndo({ size = 16 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 8H5V5" />
+      <path d="M5.5 8.5a7 7 0 113 8.6" />
+    </svg>
+  )
+}
+
+export function IconRedo({ size = 16 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 8h3V5" />
+      <path d="M18.5 8.5a7 7 0 10-3 8.6" />
+    </svg>
+  )
+}
+
+/* The library's list view — rows of thumbnails, which is what it draws. */
+export function IconRows({ size = 18 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
+      <rect x="3.5" y="4.5" width="17" height="6" rx="1.4" />
+      <rect x="3.5" y="13.5" width="17" height="6" rx="1.4" />
+      <path d="M9 4.5v6M9 13.5v6" />
+    </svg>
+  )
+}

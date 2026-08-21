@@ -434,7 +434,6 @@ def _cleanup(colmap_name: str) -> None:
     timeout=10800,
     secrets=[
         modal.Secret.from_name("custom-secret"),
-        modal.Secret.from_name("gisviz-webhook"),
     ],
     image=image,
 )

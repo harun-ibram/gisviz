@@ -33,7 +33,7 @@ export function IconNode({ size = 17 }) {
   )
 }
 
-export function IconRegion({ size = 17 }) {
+export function IconArea({ size = 17 }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
       <path d="M4 8l6-3 4 3 6-3v11l-6 3-4-3-6 3z" />

@@ -80,7 +80,7 @@ export const decorateSplat = (type, { key, id, name, modelPath, geom }) => ({
     compass: formatCompassCoordinates(geom),
     format: modelPath ? `.${getFileExtension(modelPath)}` : '—',
     geometryType: geom?.type ?? null,
-    // Labelled "vertices" in the UI: for a region it is the outline's corners,
+    // Labelled "vertices" in the UI: for an area it is the outline's corners,
     // for a node the single position.
     vertexCount: collectCoordinatePairs(geom?.coordinates).length,
     // Nothing in the API reports a pipeline state, so the only honest status is

@@ -17,10 +17,11 @@ import {
   VOLUME_RAMP_DARK_BG,
 } from '../gis/gisGeo.js'
 import MapBuildings from './MapBuildings.jsx'
+import { getNodeName, isAreaNode } from '../utils.jsx'
 
 /**
- * The viewer's location map: every node and region on a real basemap, with the
- * ones that already have a splat clickable straight into the viewer.
+ * The viewer's location map: every node on a real basemap, with the ones that
+ * already have a splat clickable straight into the viewer.
  *
  * Replaces the hand-rolled SVG minimap, which drew features on a blank
  * parchment square — accurate, but with nothing to locate them against.
@@ -37,16 +38,18 @@ import MapBuildings from './MapBuildings.jsx'
 // Shared with the coordinate picker and mirrored as CSS variables — see gisGeo.
 
 /**
- * One point — and, where one was drawn, one outline — per node/region.
+ * One point — and, for an area, one outline — per node.
  *
- * The two kinds keep their outline in different columns, because `osm.nodes.geom`
- * is `Point NOT NULL` and cannot be widened: `osm.build_way_geometry()` builds
- * ways out of it with ST_MakeLine. So a node's outline lives in `footprint` and
- * its point in `geom`, while a region carries its outline in `geom` itself and
- * has no separate point. A region created by name before a boundary was drawn
- * has neither, so it is skipped — there is nowhere to put it.
+ * There is a single geometry column now: `osm.nodes.geom` is a Point or a
+ * Polygon/MultiPolygon, so the outline and the point come from the same place.
+ * The point is the centroid of whatever that geometry is, which for a Point is
+ * the point itself; `outerRings` returns nothing for a Point, so a pin renders
+ * as a bare dot and an area renders as dot plus outline.
+ *
+ * Both, not either: at the zoom that fits a whole library a 40 m footprint is
+ * sub-pixel, so the dot stays the thing you can find and click.
  */
-const toMapFeature = (kind, raw) => {
+const toMapFeature = (raw) => {
   const pairs = collectCoordinatePairs(raw?.geom?.coordinates)
   if (pairs.length === 0) return null
 
@@ -56,14 +59,12 @@ const toMapFeature = (kind, raw) => {
   )
 
   return {
-    key: `${kind}-${kind === 'node' ? raw.node_id : raw.id}`,
-    kind,
-    name: kind === 'node' ? (raw.tags?.name ?? `Node ${raw.node_id}`) : (raw.name ?? 'Region'),
+    key: `node-${raw.node_id}`,
+    kind: isAreaNode(raw) ? 'area' : 'point',
+    name: getNodeName(raw),
     lon: lonSum / pairs.length,
     lat: latSum / pairs.length,
-    // Empty for anything created before outlines existed, which is the whole
-    // back catalogue — those keep rendering as a bare point.
-    rings: outerRings(kind === 'node' ? raw?.footprint : raw?.geom),
+    rings: outerRings(raw?.geom),
     modelPath: raw.model_path ?? null,
   }
 }
@@ -94,7 +95,7 @@ function FitToFeatures({ features }) {
 }
 
 function SplatMap({ className = '' }) {
-  const { allNodes, allRegions, loading, error, apiBaseUrl } = useSplatLibrary()
+  const { allNodes, loading, error, apiBaseUrl } = useSplatLibrary()
   const navigate = useNavigate()
   const [basemapId, setBasemapId] = useState('dark')
   const [buildings, setBuildings] = useState(null)
@@ -103,9 +104,8 @@ function SplatMap({ className = '' }) {
   const handleBuildings = useCallback((status) => setBuildings(status), [])
 
   const features = useMemo(() => [
-    ...(allNodes ?? []).map((node) => toMapFeature('node', node)),
-    ...(allRegions ?? []).map((region) => toMapFeature('region', region)),
-  ].filter(Boolean), [allNodes, allRegions])
+    ...(allNodes ?? []).map((node) => toMapFeature(node)),
+  ].filter(Boolean), [allNodes])
 
   // Splat-bearing points render last so they sit on top where features overlap.
   const ordered = useMemo(
@@ -274,7 +274,7 @@ function SplatMap({ className = '' }) {
                 <Tooltip direction="top" offset={[0, -8]}>
                   <strong>{feature.name}</strong>
                   <br />
-                  {feature.kind === 'node' ? 'Node' : 'Region'}
+                  {feature.kind === 'point' ? 'Point' : 'Area'}
                   {' · '}
                   {feature.lat.toFixed(5)}, {feature.lon.toFixed(5)}
                   {feature.rings.length > 0 ? (
@@ -369,7 +369,7 @@ function SplatMap({ className = '' }) {
           : loading
             ? 'Loading map…'
             : features.length === 0
-              ? 'Nothing on the map yet — add a node or a region first.'
+              ? 'Nothing on the map yet — add a node first.'
               // The outline count is here on purpose: when nothing is outlined,
               // this is what distinguishes "the map is broken" from "these
               // targets predate drawn outlines".

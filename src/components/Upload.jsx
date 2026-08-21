@@ -6,7 +6,8 @@ import SignInNotice from './auth/SignInNotice.jsx'
 import PolygonPicker from './PolygonPicker.jsx'
 import { convexHull, MAX_POLYGON_VERTICES, meanPoint } from '../gis/gisGeo.js'
 import { fileKey, readGpsPoints } from '../gis/photoGps.js'
-import { IconArrowRight, IconClose, IconNode, IconRegion, IconSearch, IconUpload } from './icons.jsx'
+import { IconArrowRight, IconClose, IconNode, IconArea, IconSearch, IconUpload } from './icons.jsx'
+import { getNodeName, isAreaNode } from '../utils.jsx'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -122,7 +123,7 @@ const formatBytes = (bytes) => {
 const isImage = (file) => file.type.startsWith('image/')
 
 function TargetRow({ item, active, onSelect }) {
-    const Icon = item.type === 'node' ? IconNode : IconRegion
+    const Icon = item.type === 'point' ? IconNode : IconArea
 
     return (
         <button type="button" className="gv-row" data-active={active ? '1' : '0'} onClick={onSelect}>
@@ -143,9 +144,9 @@ function Upload() {
     const { isAuthed, getToken, handleUnauthorized } = useAuth()
 
     const [mode, setMode] = useState('existing') // 'existing' | 'new'
-    const [targetType, setTargetType] = useState('node') // 'node' | 'region'
+    const [targetShape, setTargetShape] = useState('point') // 'point' | 'area'
 
-    const [targets, setTargets] = useState({ nodes: [], regions: [] })
+    const [targets, setTargets] = useState([])
     const [targetsError, setTargetsError] = useState('')
     const [targetsLoading, setTargetsLoading] = useState(true)
     const [search, setSearch] = useState('')
@@ -194,32 +195,26 @@ function Upload() {
         mounted.current = false
     }, [])
 
-    // All nodes/regions, not just processed ones /splat_nodes and /splat_regions
-    // only return features that already have a model_path.
+    // All nodes, not just processed ones /splat_nodes only returns features
+    // that already have a model_path.
     useEffect(() => {
         let active = true
 
         const loadTargets = async () => {
             try {
-                const [nodesResponse, regionsResponse] = await Promise.all([
-                    fetch(`${apiBaseUrl}/nodes`),
-                    fetch(`${apiBaseUrl}/regions`),
-                ])
+                const nodesResponse = await fetch(`${apiBaseUrl}/nodes`)
 
-                if (!nodesResponse.ok || !regionsResponse.ok) {
-                    throw new Error('Unable to load nodes and regions from the backend.')
+                if (!nodesResponse.ok) {
+                    throw new Error('Unable to load nodes from the backend.')
                 }
 
-                const [nodesData, regionsData] = await Promise.all([
-                    nodesResponse.json(),
-                    regionsResponse.json(),
-                ])
+                const nodesData = await nodesResponse.json()
 
                 if (!active) {
                     return
                 }
 
-                setTargets({ nodes: nodesData, regions: regionsData })
+                setTargets(nodesData)
                 setTargetsError('')
             } catch (loadError) {
                 if (!active) {
@@ -241,23 +236,19 @@ function Upload() {
         }
     }, [apiBaseUrl])
 
-    const items = useMemo(() => {
-        if (targetType === 'node') {
-            return targets.nodes.map((node) => ({
-                type: 'node',
+    // One list, split by geometry: the picker still offers two collections, but
+    // they are two shapes of node rather than two tables.
+    const items = useMemo(
+        () => targets
+            .filter((node) => (targetShape === 'area') === isAreaNode(node))
+            .map((node) => ({
+                type: targetShape,
                 id: String(node.node_id),
-                name: node.tags?.name ?? `Node ${node.node_id}`,
+                name: getNodeName(node),
                 hasModel: Boolean(node.model_path),
-            }))
-        }
-
-        return targets.regions.map((region) => ({
-            type: 'region',
-            id: String(region.id),
-            name: region.name,
-            hasModel: Boolean(region.model_path),
-        }))
-    }, [targetType, targets])
+            })),
+        [targetShape, targets],
+    )
 
     const query = search.trim().toLowerCase()
     const filteredItems = items.filter(
@@ -357,11 +348,10 @@ function Upload() {
     const chooseSource = (next) => {
         setChosenSource(next)
 
-        // A point target *is* a node here: /regions takes a polygon or nothing
-        // at all, because regions.geom is typed MultiPolygon. Rather than fake
-        // a square around the mean, follow the data model.
+        // Picking a mean point means the target is a point-shaped node; there
+        // is no square to fake around it.
         if (next === 'point') {
-            setTargetType('node')
+            setTargetShape('point')
             setSelectedId(null)
         }
     }
@@ -377,7 +367,7 @@ function Upload() {
 
     const targetReady = mode === 'existing'
         ? Boolean(selectedId)
-        // Both types now need a geometry, so regions no longer bypass the check.
+        // Both shapes need a geometry.
         : Boolean(newName.trim()) && (activeRing.length >= 3 || Boolean(activePoint))
 
     // The client gate is UX, not security the three POSTs below are still
@@ -445,12 +435,11 @@ function Upload() {
         }
 
         try {
-            let type = targetType
             let id = selectedId
             let name = items.find((item) => item.id === selectedId)?.name ?? ''
 
             if (mode === 'new') {
-                setStatus(`Creating ${targetType}`)
+                setStatus(`Creating ${targetShape}`)
                 name = newName.trim()
 
                 // The hull of a large enough photo set could in principle pass
@@ -463,25 +452,24 @@ function Upload() {
                     )
                 }
 
-                // A polygon for both types — the server closes the ring, derives
-                // a node's point with ST_PointOnSurface, and tags a drawn region
-                // with source='drawn'. A mean point instead goes down /nodes'
-                // lat/lon path, which is why point mode forces the node type.
+                // One endpoint for both shapes: the server closes the ring,
+                // stores the polygon as the node's own geometry, and tags it
+                // source='drawn'. A mean point goes down the same endpoint's
+                // lat/lon path instead.
                 const body = activePoint
                     ? { name, lat: activePoint[1], lon: activePoint[0] }
                     : { name, polygon: activeRing }
 
-                const createResponse = await fetch(`${apiBaseUrl}/${targetType}s`, {
+                const createResponse = await fetch(`${apiBaseUrl}/nodes`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', ...authHeaders },
                     body: JSON.stringify(body),
                 })
 
-                await checkWrite(createResponse, `Unable to create ${targetType} (${createResponse.status})`)
+                await checkWrite(createResponse, `Unable to create ${targetShape} (${createResponse.status})`)
 
                 const created = await createResponse.json()
-                id = String(targetType === 'node' ? created.node_id : created.id)
-                type = targetType
+                id = String(created.node_id)
             }
 
             setStatus('Creating job…')
@@ -490,8 +478,7 @@ function Upload() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders },
                 body: JSON.stringify({
-                    target_type: type,
-                    target_id: id,
+                    node_id: Number(id),
                     filenames: files.map((file) => file.name),
                     want_mesh: wantMesh,
                 }),
@@ -530,7 +517,7 @@ function Upload() {
             const job = await pollUntilDone(jobId)
 
             setStatus('Done')
-            setResult({ modelPath: job.output_key, name: name || job.target_id })
+            setResult({ modelPath: job.output_key, name: name || String(job.node_id) })
 
             // `status` is about the splat alone, so a mesh job is still running
             // at this point. Say so rather than let the user conclude the mesh
@@ -588,24 +575,24 @@ function Upload() {
                             <div className="gv-toggle-spacer" />
                             <button
                                 type="button"
-                                className={`btn ${targetType === 'node' ? 'btn-primary' : 'btn-secondary'}`}
-                                onClick={() => { setTargetType('node'); setSelectedId(null); setDrawnPolygon([]) }}
+                                className={`btn ${targetShape === 'point' ? 'btn-primary' : 'btn-secondary'}`}
+                                onClick={() => { setTargetShape('point'); setSelectedId(null); setDrawnPolygon([]) }}
                             >
-                                Node
+                                Point
                             </button>
                             <button
                                 type="button"
-                                className={`btn ${targetType === 'region' ? 'btn-primary' : 'btn-secondary'}`}
-                                // A mean point can only be stored as a node, so
-                                // the type is not the user's to change while
-                                // that source is active.
+                                className={`btn ${targetShape === 'area' ? 'btn-primary' : 'btn-secondary'}`}
+                                // A mean point can only be stored as a
+                                // point-shaped node, so the shape is not the
+                                // user's to change while that source is active.
                                 disabled={mode === 'new' && outlineSource === 'point'}
                                 title={mode === 'new' && outlineSource === 'point'
-                                    ? 'A single point is stored as a node'
+                                    ? 'A single point is stored as a point node'
                                     : undefined}
-                                onClick={() => { setTargetType('region'); setSelectedId(null); setDrawnPolygon([]) }}
+                                onClick={() => { setTargetShape('area'); setSelectedId(null); setDrawnPolygon([]) }}
                             >
-                                Region
+                                Area
                             </button>
                         </div>
 
@@ -618,7 +605,7 @@ function Upload() {
                                         </span>
                                         <input
                                             className="input gv-search-input"
-                                            placeholder={`Search ${targetType}s`}
+                                            placeholder={`Search ${targetShape}s`}
                                             value={search}
                                             onChange={(event) => setSearch(event.target.value)}
                                         />
@@ -639,7 +626,7 @@ function Upload() {
                                         ))
                                     ) : (
                                         <p className="text-muted gv-empty-row">
-                                            {targetsLoading ? `Loading ${targetType}s...` : `No ${targetType}s found.`}
+                                            {targetsLoading ? `Loading ${targetShape}s...` : `No ${targetShape}s found.`}
                                         </p>
                                     )}
                                 </div>
@@ -651,7 +638,7 @@ function Upload() {
                                     <input
                                         id="new-name"
                                         className="input"
-                                        placeholder={`New ${targetType} name`}
+                                        placeholder={`New ${targetShape} name`}
                                         value={newName}
                                         onChange={(event) => setNewName(event.target.value)}
                                     />
@@ -815,7 +802,7 @@ function Upload() {
                 <aside className="gv-detail-rail">
                     <div className="gv-detail-head">
                         <span className="text-muted gv-detail-kicker">Job</span>
-                        <span className="tag tag-accent">{targetType}</span>
+                        <span className="tag tag-accent">{targetShape}</span>
                     </div>
 
                     <div className="gv-detail-rows">

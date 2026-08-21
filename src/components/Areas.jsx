@@ -4,19 +4,18 @@ import { getNodeName, isAreaNode } from '../utils'
 import { decorateSplat } from './libraryUtils'
 import SplatBrowser from './SplatBrowser.jsx'
 
-function Nodes() {
+// What used to be the Regions page. Regions were folded into nodes, so this is
+// now the subset of nodes whose geometry is an area rather than a point — the
+// same rows as before, selected by shape instead of by table.
+function Areas() {
     const { error, loading, allNodes } = useSplatLibrary()
 
     useEffect(() => {
-        document.title = 'Nodes'
+        document.title = 'Areas'
     }, [])
 
-    // Every node, points and areas alike — this is the whole collection, and
-    // /areas is its polygon subset. The type still has to say which shape each
-    // row is, because SplatBrowser picks the icon and the "Vertices"/"Positions"
-    // label from it.
-    const decoratedNodes = useMemo(
-        () => allNodes.map((node) => decorateSplat(isAreaNode(node) ? 'Area' : 'Point', {
+    const decoratedAreas = useMemo(
+        () => allNodes.filter(isAreaNode).map((node) => decorateSplat('Area', {
             key: `node-${node.node_id}`,
             id: node.node_id,
             name: getNodeName(node),
@@ -27,11 +26,11 @@ function Nodes() {
     )
 
     const groups = useMemo(
-        () => [{ id: 'nodes', label: 'Nodes', items: decoratedNodes }],
-        [decoratedNodes],
+        () => [{ id: 'areas', label: 'Areas', items: decoratedAreas }],
+        [decoratedAreas],
     )
 
     return <SplatBrowser groups={groups} loading={loading} error={error} />
 }
 
-export default Nodes
+export default Areas

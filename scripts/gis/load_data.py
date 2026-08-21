@@ -1,3 +1,4 @@
+import hashlib
 import json
 import xml.etree.ElementTree as ET
 import psycopg2
@@ -76,19 +77,36 @@ print("Built way/relation geometries")
 with open("/mnt/user-data/uploads/ro.json") as f:
     geo = json.load(f)
 
-regions = []
+# Boundaries are area nodes now, not their own table. Their source ids are
+# TEXT ("ROSM"), which cannot be a BIGINT primary key, so each gets a stable
+# negative id derived from that id by hash — negative being the space osm.nodes
+# reserves for non-OSM features, and hashed so a re-import updates the same row
+# instead of appending a duplicate. Mirrors load_gis._boundary_node_id.
+def boundary_node_id(source_id: str) -> int:
+    digest = hashlib.blake2b(str(source_id).encode("utf-8"), digest_size=6).digest()
+    return -int.from_bytes(digest, "big") - 1
+
+boundaries = []
 for feat in geo["features"]:
     props = feat["properties"]
     geom_json = json.dumps(feat["geometry"])
-    regions.append((props["id"], props["name"], props.get("source"), json.dumps(props), geom_json))
+    # `name` goes into tags because osm.nodes.name is generated from
+    # tags->>'name'; source_id keeps the link back to the source feature.
+    tags = dict(props)
+    tags["name"] = props.get("name") or str(props["id"])
+    tags["source_id"] = str(props["id"])
+    boundaries.append((
+        boundary_node_id(props["id"]), geom_json, json.dumps(tags),
+        props.get("source") or "ro.json",
+    ))
 
 execute_values(cur, """
-    INSERT INTO public.regions (id, name, source, properties, geom)
+    INSERT INTO osm.nodes (node_id, geom, tags, source)
     VALUES %s ON CONFLICT DO NOTHING
-""", regions, template="(%s, %s, %s, %s, ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(%s),4326)))")
+""", boundaries, template="(%s, ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(%s),4326)), %s, %s)")
 
 conn.commit()
-print(f"Loaded {len(regions)} regions")
+print(f"Loaded {len(boundaries)} boundary nodes")
 
 cur.close()
 conn.close()

@@ -13,7 +13,7 @@ summary (feature count + total bounds). From map.osm it splits out two useful
 layers — building footprints (polygons) and roads (lines).
 
 The cleaned outputs land in data_output/gis/. regions_4326.geojson is what
-load_gis.py upserts into public.regions; the OSM building/road GeoJSON are
+load_gis.py upserts them into osm.nodes as area nodes; the OSM building/road GeoJSON are
 inspection/overlay exports (the full OSM graph itself is loaded separately by
 scripts/load_data.py into the osm.* tables).
 

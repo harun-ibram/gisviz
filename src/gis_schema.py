@@ -73,7 +73,7 @@ DDL_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_vector_layers_job    ON public.vector_layers (job_id)",
     "CREATE INDEX IF NOT EXISTS idx_vector_layers_type   ON public.vector_layers (layer_type, sublayer)",
     # ---- 3. gis_jobs ----------------------------------------------------
-    # Separate from public.jobs, whose target_type/target_id are NOT NULL and
+    # Separate from public.jobs, whose node_id is NOT NULL and
     # meaningless here, whose status vocabulary lacks 'queued', and which
     # carries a modal_call_id no GIS job will ever have.
     """
@@ -151,10 +151,10 @@ DDL_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_buildings_layer ON public.buildings (layer_id)",
     "CREATE INDEX IF NOT EXISTS idx_buildings_job   ON public.buildings (job_id)",
     # ---- 6. splat pipeline: SuGaR mesh stage -----------------------------
-    # public.jobs itself is created by scripts/gis/schema.sql, not here — this
-    # only adds what the mesh stage introduced, so a deployed database picks the
-    # columns up on the next boot instead of needing a hand-run ALTER. Mirrors
-    # the Job / OSMNode / Region models in src/models.py.
+    # public.jobs itself is created by scripts/gis/bootstrap.sql, not here —
+    # this only adds what the mesh stage introduced, so a deployed database
+    # picks the columns up on the next boot instead of needing a hand-run
+    # ALTER. Mirrors the Job / OSMNode models in src/models.py.
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS want_mesh         BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS work_prefix       TEXT",
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_key          TEXT",
@@ -162,21 +162,16 @@ DDL_STATEMENTS: list[str] = [
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_error        TEXT",
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS mesh_call_id      TEXT",
     "ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS inputs_deleted_at TIMESTAMPTZ",
-    "ALTER TABLE osm.nodes      ADD COLUMN IF NOT EXISTS mesh_path  TEXT",
-    "ALTER TABLE public.regions ADD COLUMN IF NOT EXISTS mesh_path  TEXT",
-    # model_path was on the Region model but never in regions' CREATE TABLE.
-    "ALTER TABLE public.regions ADD COLUMN IF NOT EXISTS model_path TEXT",
-    # ---- 7. drawn footprints ---------------------------------------------
-    # The outline a user draws when creating a target. Regions already have a
-    # MultiPolygon `geom` to hold one; nodes do not and cannot — osm.nodes.geom
-    # is a Point that osm.build_way_geometry() feeds to ST_MakeLine — so they
-    # get a separate nullable column and keep the point as ST_PointOnSurface of
-    # the outline. Mirrors the OSMNode model in src/models.py.
-    "ALTER TABLE osm.nodes ADD COLUMN IF NOT EXISTS footprint GEOMETRY(MultiPolygon, 4326)",
-    "CREATE INDEX IF NOT EXISTS idx_nodes_footprint ON osm.nodes USING GIST (footprint)",
-    # A database built from an older scripts/gis/schema.sql may still have this
-    # NOT NULL. Dropping it on an already-nullable column is a no-op, not an error.
-    "ALTER TABLE public.regions ALTER COLUMN geom DROP NOT NULL",
+    "ALTER TABLE osm.nodes ADD COLUMN IF NOT EXISTS mesh_path TEXT",
+    # ---- 7. nodes and regions are one table ------------------------------
+    # public.regions is gone; a node's own `geom` is a Point or an area, and
+    # `source` says which kind of thing it is. Nothing here re-creates the
+    # dropped `footprint` column or the regions table: this list is a top-up
+    # for an existing database, and scripts/gis/bootstrap.sql is what builds
+    # one from zero. Mirrors the OSMNode model in src/models.py.
+    "ALTER TABLE osm.nodes ADD COLUMN IF NOT EXISTS source TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_nodes_kind  ON osm.nodes ((GeometryType(geom)))",
+    "CREATE INDEX IF NOT EXISTS idx_nodes_drawn ON osm.nodes (source) WHERE source = 'drawn'",
 ]
 
 

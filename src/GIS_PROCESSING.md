@@ -10,7 +10,7 @@ raw input            processor            artifacts                         DB (
 ─────────────────────────────────────────────────────────────────────────────────────────
 public/output_hh.tif  process_raster.py   data_output/gis/*_4326.tif        public.raster_layers
 public/*.laz          process_lidar.py    public/overlays/*.png  + bounds   public.raster_layers
-public/ro.json        process_vectors.py  data_output/gis/regions_4326.geojson  public.regions
+public/ro.json        process_vectors.py  data_output/gis/regions_4326.geojson  osm.nodes (areas)
 data/map.osm          process_vectors.py  data_output/gis/osm_{buildings,roads}_4326.geojson
 DSM + DEM + footprints building_heights.py data_output/gis/*_heights_4326.geojson
 ```
@@ -156,10 +156,10 @@ python load_gis.py --all                 # process raster + lidar + regions and 
 python load_gis.py --all --dry-run       # process only, skip DB writes
 ```
 
-`load_gis.py` ensures the `public.raster_layers` schema (`schema_gis.sql`, in
-this same directory), upserts each raster overlay (bounds as a WGS84 envelope +
-`overlay_path`), and upserts the cleaned `ro.json` regions into
-`public.regions`. It connects with `DB_URL` from the repo-root `.env` — the
+`load_gis.py` ensures the schema (`scripts/gis/bootstrap.sql`, which builds the
+whole database), upserts each raster overlay (bounds as a WGS84 envelope +
+`overlay_path`), and upserts the cleaned `ro.json` boundaries into `osm.nodes`
+as area nodes — there is no longer a separate `regions` table. It connects with `DB_URL` from the repo-root `.env` — the
 same database the FastAPI backend reads.
 
 ## Serving to the frontend

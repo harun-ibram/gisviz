@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, Column, DateTime, Text, text
+from sqlalchemy import BigInteger, Boolean, Column, Computed, DateTime, ForeignKey, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import UserDefinedType
 from sqlmodel import Field, SQLModel
@@ -17,10 +17,22 @@ class GeometryType(UserDefinedType):
 
 
 class OSMNode(SQLModel, table=True):
+    """
+    Every map target: an OSM point, a drawn outline, or an imported boundary.
+
+    This is what used to be two tables. `public.regions` was "a named polygon
+    you can hang a splat on", which is a node with an area — so `geom` is now
+    Point *or* Polygon/MultiPolygon (constrained in the DDL) and the separate
+    nullable `footprint` column is gone. One id space, one set of endpoints.
+    """
+
     __tablename__ = "nodes"
     __table_args__ = {"schema": "osm"}
 
-    node_id: int = Field(primary_key=True)
+    # Explicitly BIGINT, matching bootstrap.sql. A bare `int` primary key
+    # compiles to SERIAL (32-bit), which the ids imported boundaries get —
+    # a 48-bit hash, negative — would overflow.
+    node_id: int = Field(sa_column=Column(BigInteger, primary_key=True, autoincrement=False))
     version: int | None = Field(default=None)
     changeset: int | None = Field(default=None)
     user: str | None = Field(default=None, sa_column=Column("user", Text))
@@ -28,19 +40,27 @@ class OSMNode(SQLModel, table=True):
     timestamp: datetime | None = Field(
         default=None, sa_column=Column("timestamp", DateTime(timezone=True))
     )
-    geom: Any = Field(sa_column=Column(GeometryType("Point", 4326), nullable=False))
-    # The area a user drew when creating this node. `geom` stays a Point — it is
-    # what the map plots a dot at, and osm.build_way_geometry() feeds it to
-    # ST_MakeLine, so widening its type would break way construction. The point
-    # is derived from this outline with ST_PointOnSurface.
-    footprint: Any | None = Field(
-        default=None,
-        sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=True),
-    )
+    # Point for a pin, Polygon/MultiPolygon for an area. osm.build_way_geometry()
+    # coerces with ST_PointOnSurface before ST_MakeLine, which is why widening
+    # this no longer breaks way construction.
+    geom: Any = Field(sa_column=Column(GeometryType("Geometry", 4326), nullable=False))
     tags: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
+    # Generated in the database from tags->>'name', never written directly.
+    # OSM nodes carry their name in tags and regions used to carry it in a
+    # NOT NULL column of its own; this keeps one source of truth while still
+    # giving readers a real column.
+    name: str | None = Field(
+        default=None,
+        sa_column=Column(Text, Computed("tags ->> 'name'", persisted=True)),
+    )
+    # What kind of thing this is, and load-bearing rather than decorative:
+    # 'drawn' is the filter that stops gis_worker's height measurement from
+    # rasterising an imported county. NULL/'osm' = from map.osm, 'drawn' = drawn
+    # in the browser, anything else = an import's origin (e.g. 'ro.json').
+    source: str | None = Field(default=None, sa_column=Column(Text))
     model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
     # R2 key of the SuGaR mesh (.glb) extracted from the splat at model_path.
     # Independent of model_path: meshing runs after the splat is already served,
@@ -109,23 +129,10 @@ class OSMRelationMember(SQLModel, table=True):
     sequence_id: int = Field(primary_key=True)
 
 
-class Region(SQLModel, table=True):
-    __tablename__ = "regions"
-    __table_args__ = {"schema": "public"}
-
-    id: str = Field(primary_key=True)
-    name: str = Field(nullable=False)
-    source: str | None = Field(default=None)
-    properties: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
-    )
-    # Nullable: a region created via POST /regions (name only, no drawn boundary
-    # yet) has no geometry until one is assigned later.
-    geom: Any | None = Field(default=None, sa_column=Column(GeometryType("MultiPolygon", 4326), nullable=True))
-    model_path: str | None = Field(default=None, sa_column=Column("model_path", Text))
-    # See OSMNode.mesh_path — the SuGaR mesh derived from model_path's splat.
-    mesh_path: str | None = Field(default=None, sa_column=Column("mesh_path", Text))
+# public.regions is gone: a region was a node with an area, and OSMNode now
+# holds both shapes. Region.name lives on as OSMNode.name (generated from
+# tags->>'name'), Region.properties merged into OSMNode.tags, and the uuid ids
+# became the same negative BIGINTs drawn nodes already used.
 
 
 class RasterLayer(SQLModel, table=True):
@@ -203,7 +210,7 @@ class GisJob(SQLModel, table=True):
     An upload -> process -> index run for one of the four GIS input types.
 
     Kept apart from public.jobs (the splat pipeline): that table's
-    target_type/target_id are NOT NULL and meaningless here, its status
+    node_id is NOT NULL and meaningless here, its status
     vocabulary has no 'queued', and it carries a modal_call_id no GIS job has.
     """
 
@@ -264,8 +271,17 @@ class Job(SQLModel, table=True):
     # model ready?". It now reaches 'done' at the same moment mesh_status does,
     # rather than roughly half an hour earlier.
     status: str = Field(default="pending")  # pending | processing | done | failed
-    target_type: str = Field(nullable=False)  # "node" | "region"
-    target_id: str = Field(nullable=False)  # OSMNode.node_id (as str) or Region.id
+    # Replaces the old (target_type, target_id) pair. target_type only ever held
+    # 'node' or 'region', and with regions merged there is nothing left to
+    # discriminate — so the surviving id is a real FK instead of a TEXT column
+    # that had to be cast at every use and referenced nothing.
+    node_id: int = Field(
+        sa_column=Column(
+            BigInteger,
+            ForeignKey("osm.nodes.node_id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
     input_prefix: str = Field(nullable=False)  # R2 key prefix holding uploaded photos
     output_key: str | None = Field(default=None, sa_column=Column("output_key", Text))
     modal_call_id: str | None = Field(default=None, sa_column=Column("modal_call_id", Text))

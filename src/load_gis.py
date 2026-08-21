@@ -4,10 +4,10 @@ load_gis.py — Step 2 (GIS Processing): run the processors and load into PostGI
 
 The bridge from Step 2 (processing) back to Step 1 (PostGIS + FastAPI). It:
 
-  1. ensures the raster_layers schema exists (schema_gis.sql)
+  1. ensures the schema exists (scripts/gis/bootstrap.sql)
   2. runs the raster / LiDAR processors to produce web overlays + bounds, and
      upserts each as a row in public.raster_layers
-  3. optionally upserts the cleaned ro.json regions into public.regions
+  3. optionally upserts the cleaned ro.json boundaries into osm.nodes
 
 Once loaded, the FastAPI backend can expose these via a `/raster_layers`
 endpoint (returning overlay_path + ST_AsGeoJSON(bounds)) exactly the way it
@@ -18,7 +18,7 @@ Connects using DB_URL from the repo-root .env — the same database the backend
 reads from. Bring the DB up first (e.g. `docker-compose up`).
 
 Usage:
-    python load_gis.py --all                 # raster + lidar + regions
+    python load_gis.py --all                 # raster + lidar + boundaries
     python load_gis.py --raster              # just output_hh.tif
     python load_gis.py --lidar --cell 1.0
     python load_gis.py --regions
@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -37,7 +38,10 @@ import gis_common as gc
 import process_lidar
 import process_raster
 
-SCHEMA_SQL = Path(__file__).with_name("schema_gis.sql")
+# One file builds the whole database now, so the loader applies the same thing
+# a fresh instance gets rather than its own partial copy. It lives under
+# scripts/gis/ with the loaders it belongs to, not next to the API.
+SCHEMA_SQL = gc.REPO_ROOT / "scripts" / "gis" / "bootstrap.sql"
 
 
 def ensure_schema(engine) -> None:
@@ -98,8 +102,18 @@ def upsert_raster_layer(engine, layer: gc.RasterLayer) -> None:
 
 def upsert_regions(engine, geojson_path: Path) -> int:
     """
-    Upsert cleaned regions (from process_vectors' regions_4326.geojson) into
-    public.regions. Polygons are wrapped to MultiPolygon to match the column.
+    Upsert cleaned boundaries (process_vectors' regions_4326.geojson) into
+    osm.nodes as area nodes.
+
+    These used to be their own table with TEXT ids. osm.nodes is keyed by
+    BIGINT, so a source id like "ROSM" cannot be the primary key any more —
+    each feature gets a deterministic negative id derived from that id instead,
+    which keeps the upsert idempotent (re-running updates the same row rather
+    than appending a duplicate) without a sequence or a lookup table.
+
+    `source` comes from the file and is deliberately never 'drawn': that value
+    is reserved for outlines a user drew, and gis_worker uses it to decide what
+    is small enough to measure against LiDAR.
     """
     from sqlalchemy import text
 
@@ -113,14 +127,15 @@ def upsert_regions(engine, geojson_path: Path) -> int:
     fc = json.loads(geojson_path.read_text())
     sql = text(
         """
-        INSERT INTO public.regions (id, name, source, properties, geom)
-        VALUES (:id, :name, :source, CAST(:properties AS jsonb),
-                ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326)))
-        ON CONFLICT (id) DO UPDATE SET
-            name       = EXCLUDED.name,
-            source     = EXCLUDED.source,
-            properties = EXCLUDED.properties,
-            geom       = EXCLUDED.geom
+        INSERT INTO osm.nodes (node_id, geom, tags, source)
+        VALUES (:node_id,
+                ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326)),
+                CAST(:tags AS jsonb),
+                :source)
+        ON CONFLICT (node_id) DO UPDATE SET
+            geom   = EXCLUDED.geom,
+            tags   = EXCLUDED.tags,
+            source = EXCLUDED.source
         """
     )
     count = 0
@@ -130,19 +145,40 @@ def upsert_regions(engine, geojson_path: Path) -> int:
             rid = props.get("id")
             if rid is None:
                 continue
+            # tags carries what `properties` used to, with `name` promoted to
+            # the key osm.nodes.name is generated from, and the original id kept
+            # so a row can still be traced back to its source feature.
+            tags = dict(props)
+            tags["name"] = props.get("name") or str(rid)
+            tags["source_id"] = str(rid)
             conn.execute(
                 sql,
                 {
-                    "id": str(rid),
-                    "name": props.get("name") or str(rid),
-                    "source": props.get("source"),
-                    "properties": json.dumps(props),
+                    "node_id": _boundary_node_id(str(rid)),
+                    "tags": json.dumps(tags),
+                    "source": props.get("source") or geojson_path.name,
                     "geom": json.dumps(feat["geometry"]),
                 },
             )
             count += 1
-    print(f"[load] regions <- {count} features")
+    print(f"[load] regions <- {count} area nodes")
     return count
+
+
+def _boundary_node_id(source_id: str) -> int:
+    """
+    A stable negative node_id for an imported boundary.
+
+    Negative because that is the space osm.nodes already reserves for
+    non-OSM features (POST /nodes allocates MIN(node_id) - 1), so an import can
+    never collide with a real OSM node id. Derived from the source id by hash so
+    that re-importing the same file updates rather than duplicates.
+
+    blake2b rather than hash(): PYTHONHASHSEED randomises str hashing per
+    process, which would give the same boundary a different id on every run.
+    """
+    digest = hashlib.blake2b(source_id.encode("utf-8"), digest_size=6).digest()
+    return -int.from_bytes(digest, "big") - 1
 
 
 # Columns building_heights.py adds to each footprint. Kept as a tuple so the
@@ -272,10 +308,9 @@ def upsert_buildings(
             osm_id = None
 
         # An explicit id wins over the derived one. Drawn target outlines need
-        # this: a region's own id is TEXT, so it cannot ride in osm_id (BIGINT),
-        # and the positional fallback below would give it a different row every
-        # time the set of drawn outlines changes — re-measuring would duplicate
-        # rather than update.
+        # this: the positional fallback below would give one a different row
+        # every time the set of drawn outlines changes, so re-measuring would
+        # duplicate rather than update.
         row_id = props.get("building_id")
         measured = {field: _clean_number(props.get(field)) for field in _MEASURED_FIELDS}
         rows.append(
@@ -317,10 +352,10 @@ def upsert_buildings(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Process GIS inputs and load them into PostGIS.")
-    parser.add_argument("--all", action="store_true", help="raster + lidar + regions")
+    parser.add_argument("--all", action="store_true", help="raster + lidar + boundaries")
     parser.add_argument("--raster", action="store_true", help="process + load output_hh.tif")
     parser.add_argument("--lidar", action="store_true", help="process + load the .laz DEM")
-    parser.add_argument("--regions", action="store_true", help="load cleaned ro.json regions")
+    parser.add_argument("--regions", action="store_true", help="load cleaned ro.json boundaries as area nodes")
     parser.add_argument("--cell", type=float, default=1.0, help="LiDAR grid cell size in metres")
     # Not covered by --all: it needs a path, since the measured file is named
     # after whichever extract it came from rather than being a fixed fixture.

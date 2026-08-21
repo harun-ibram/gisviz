@@ -308,31 +308,26 @@ def _find_overlapping_lidar(bounds: list[float] | None) -> tuple[str, str, str] 
 
 _DRAWN_LAYER_ID = "drawn"
 
-# The API caps a drawn polygon at 5000 km2 — a bound meant for naming a region,
+# The API caps a drawn polygon at 5000 km2 — a bound meant for naming an area,
 # not for something about to be rasterised at one metre. Past this it is not a
 # building and measuring it would mean gridding a county.
 _MAX_DRAWN_AREA_M2 = 2_000_000
 
+# One branch, not two: nodes and regions are the same table now, so a drawn
+# outline is any node whose geometry is an area.
+#
+# `source = 'drawn'` is what keeps this to outlines a user actually drew.
+# Without it every administrative boundary imported from ro.json qualifies, and
+# the area cap is the only thing standing between us and measuring a county.
 _DRAWN_SELECT = """
-    SELECT 'drawn:node:' || n.node_id                          AS building_id,
-           n.node_id                                           AS osm_id,
-           COALESCE(n.tags ->> 'name', 'Node ' || n.node_id)   AS name,
-           ST_AsGeoJSON(n.footprint)                           AS geom
+    SELECT 'drawn:node:' || n.node_id                    AS building_id,
+           n.node_id                                     AS osm_id,
+           COALESCE(n.name, 'Node ' || n.node_id)        AS name,
+           ST_AsGeoJSON(n.geom)                          AS geom
     FROM osm.nodes n
-    WHERE n.footprint IS NOT NULL
-      AND ST_Area(n.footprint::geography) <= :max_area{node_bbox}
-    UNION ALL
-    SELECT 'drawn:region:' || r.id,
-           NULL,
-           COALESCE(r.name, 'Region ' || r.id),
-           ST_AsGeoJSON(r.geom)
-    FROM public.regions r
-    WHERE r.geom IS NOT NULL
-      -- Only outlines a user actually drew. Without this every administrative
-      -- region loaded from ro.json qualifies, and the area cap is the only
-      -- thing standing between us and measuring a county.
-      AND r.source = 'drawn'
-      AND ST_Area(r.geom::geography) <= :max_area{region_bbox}
+    WHERE GeometryType(n.geom) IN ('POLYGON', 'MULTIPOLYGON')
+      AND n.source = 'drawn'
+      AND ST_Area(n.geom::geography) <= :max_area{node_bbox}
 """
 
 _BBOX_CLAUSE = (
@@ -349,8 +344,7 @@ def _drawn_footprints(bounds: list[float] | None) -> list[dict[str, Any]]:
         params.update(bbox)
 
     sql = _DRAWN_SELECT.format(
-        node_bbox=_BBOX_CLAUSE.format(column="n.footprint") if bbox else "",
-        region_bbox=_BBOX_CLAUSE.format(column="r.geom") if bbox else "",
+        node_bbox=_BBOX_CLAUSE.format(column="n.geom") if bbox else "",
     )
     with engine.begin() as conn:
         rows = conn.execute(text(sql), params).mappings().all()
@@ -360,8 +354,9 @@ def _drawn_footprints(bounds: list[float] | None) -> list[dict[str, Any]]:
             "type": "Feature",
             "geometry": json.loads(row["geom"]),
             "properties": {
-                # Explicit, because a region's id is TEXT and cannot ride in
-                # osm_id — see the note in load_gis.upsert_buildings.
+                # Explicit rather than derived from osm_id: it is the stable
+                # key that lets a re-measurement update its row instead of
+                # inserting a second one.
                 "building_id": row["building_id"],
                 "osm_id": row["osm_id"],
                 "name": row["name"],

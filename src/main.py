@@ -27,7 +27,6 @@ from models import (
     OSMRelationMember,
     OSMWay,
     OSMWayNode,
-    Region,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,12 +129,12 @@ async def get_splat_url(path: str = Query(...), download: bool = False):
     }
 
 # API endpoints
-# Both geometry columns are rendered as GeoJSON. `footprint` must be selected
-# explicitly: left to model_dump it would come back as raw EWKB hex.
+# `geom` is rendered as GeoJSON and is now the only geometry column — it carries
+# the pin or the area, whichever this node is. Left to model_dump it would come
+# back as raw EWKB hex, hence the explicit ST_AsGeoJSON.
 _NODE_SELECT = select(
     OSMNode,
     func.ST_AsGeoJSON(OSMNode.geom),
-    func.ST_AsGeoJSON(OSMNode.footprint),
 )
 
 
@@ -143,10 +142,7 @@ _NODE_SELECT = select(
 async def get_nodes(session: SessionDep):
     rows = session.exec(_NODE_SELECT).all()
 
-    return [
-        _row_to_dict(obj, geojson, footprint=footprint)
-        for obj, geojson, footprint in rows
-    ]
+    return [_row_to_dict(obj, geojson) for obj, geojson in rows]
 
 @app.get("/splat_nodes")
 async def get_splat_nodes(session: SessionDep):
@@ -154,10 +150,7 @@ async def get_splat_nodes(session: SessionDep):
         _NODE_SELECT.where(OSMNode.model_path != None)
     ).all()
 
-    return [
-        _row_to_dict(obj, geojson, footprint=footprint)
-        for obj, geojson, footprint in rows
-    ]
+    return [_row_to_dict(obj, geojson) for obj, geojson in rows]
 
 @app.get("/nodes/{node_id}")
 async def get_node(node_id: int, session: SessionDep):
@@ -168,9 +161,9 @@ async def get_node(node_id: int, session: SessionDep):
     if not row:
         return {"error": "Node not found"}
 
-    obj, geojson, footprint = row
+    obj, geojson = row
 
-    return _row_to_dict(obj, geojson, footprint=footprint)
+    return _row_to_dict(obj, geojson)
 
 @app.get("/nodes/{node_id}/model_path")
 async def get_node_model_path(node_id: int, session: SessionDep):
@@ -322,14 +315,18 @@ async def create_node(
     tags = json.dumps({"name": body.name})
 
     if body.polygon is not None:
+        # The outline *is* the node's geometry now — there is no longer a
+        # separate footprint column, and no derived ST_PointOnSurface pin to
+        # keep in sync with it. `source = 'drawn'` is what later tells a
+        # hand-drawn area apart from an imported administrative boundary.
         sql = text(
             _POLYGON_CTE
             + """
-            INSERT INTO osm.nodes (node_id, geom, footprint, tags)
+            INSERT INTO osm.nodes (node_id, geom, tags, source)
             SELECT (SELECT COALESCE(MIN(node_id), 0) - 1 FROM osm.nodes),
-                   ST_PointOnSurface(c.poly),
                    c.poly,
-                   CAST(:tags AS jsonb)
+                   CAST(:tags AS jsonb),
+                   'drawn'
             FROM checked c
             RETURNING node_id
             """
@@ -342,11 +339,12 @@ async def create_node(
     elif body.lat is not None and body.lon is not None:
         sql = text(
             """
-            INSERT INTO osm.nodes (node_id, geom, tags)
+            INSERT INTO osm.nodes (node_id, geom, tags, source)
             VALUES (
                 (SELECT COALESCE(MIN(node_id), 0) - 1 FROM osm.nodes),
                 ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                CAST(:tags AS jsonb)
+                CAST(:tags AS jsonb),
+                'drawn'
             )
             RETURNING node_id
             """
@@ -391,119 +389,19 @@ def _insert_with_id_retry(session, sql, params, attempts: int = 3):
     return None
 
 
-class CreateRegionRequest(BaseModel):
-    name: str
-    polygon: list[list[float]] | None = None
-
-
-@app.post("/regions", dependencies=[RequireUser])
-async def create_region(
-    body: CreateRegionRequest, session: SessionDep, background: BackgroundTasks
-):
-    """Create a region, with a drawn boundary when one was supplied."""
-    region_id = str(uuid.uuid4())
-
-    if body.polygon is None:
-        # No outline: the pre-polygon behaviour, a name with no boundary yet.
-        region = Region(id=region_id, name=body.name, geom=None)
-        session.add(region)
-        try:
-            session.commit()
-        except IntegrityError as exc:
-            session.rollback()
-            raise HTTPException(
-                status_code=400, detail=f"Could not create region: {exc.orig}"
-            ) from exc
-        return {"id": region.id, "name": region.name}
-
-    # Raw SQL rather than the ORM: `geom` is typed MultiPolygon, so the value has
-    # to go through ST_Multi, which is not expressible as a column assignment.
-    # `source = 'drawn'` is what lets the viewer tell a hand-drawn area apart
-    # from an imported administrative boundary.
-    row = session.exec(
-        text(
-            _POLYGON_CTE
-            + """
-            INSERT INTO public.regions (id, name, source, properties, geom)
-            SELECT :id, :name, 'drawn', '{}'::jsonb, c.poly
-            FROM checked c
-            RETURNING id
-            """
-        ),
-        params={
-            "id": region_id,
-            "name": body.name,
-            "geom": _ring_to_geojson(body.polygon),
-            "max_area": MAX_POLYGON_AREA_M2,
-        },
-    ).first()
-
-    if row is None:
-        session.rollback()
-        raise HTTPException(status_code=400, detail=_BAD_OUTLINE)
-
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(
-            status_code=400, detail=f"Could not create region: {exc.orig}"
-        ) from exc
-
-    # After the commit, not before: the measurement reads the row back out of
-    # the database, so scheduling it against an uncommitted insert would find
-    # nothing to measure.
-    _measure_drawn_later(background, body.polygon)
-    return {"id": region_id, "name": body.name}
-
-
-@app.get("/regions")
-async def get_regions(session: SessionDep):
-    rows = session.exec(
-        select(Region, func.ST_AsGeoJSON(Region.geom))
-    ).all()
-
-    return [_row_to_dict(obj, geojson) for obj, geojson in rows]
-
-@app.get("/splat_regions")
-async def get_splat_regions(session: SessionDep):
-    rows = session.exec(
-        select(Region, func.ST_AsGeoJSON(Region.geom))
-        .where(Region.model_path != None)
-    ).all()
-
-    return [_row_to_dict(obj, geojson) for obj, geojson in rows]
-
-# `id: str`, not int: Region.id is a uuid string, so the int annotation 422'd on
-# every region the API itself creates — i.e. exactly the drawn ones.
-@app.get("/regions/{id}")
-async def get_region(id: str, session: SessionDep):
-    row = session.exec(
-        select(Region, func.ST_AsGeoJSON(Region.geom))
-        .where(Region.id == id)
-    ).first()
-
-    if not row:
-        return {"error": "Region not found"}
-    
-    obj, geojson = row
-    
-    return _row_to_dict(obj, geojson)
-
-@app.get("/regions/{id}/model_path")
-async def get_region_model_path(id: str, session: SessionDep):
-    region = session.exec(
-        select(Region)
-        .where(Region.id == id)
-    ).first()
-
-    if not region:
-        return {"error": "Region not found"}
-    return {"model_path": region.model_path,
-            "url": get_signed_url(region.model_path),
-            "filename": region.model_path.split("/")[-1],
-            **_mesh_fields(region.mesh_path),
-    }
+# The /regions endpoints are gone. A region was a node with an area, so every
+# one of them had a /nodes twin that now serves both shapes:
+#
+#   POST /regions            -> POST /nodes with a `polygon` body
+#   GET  /regions            -> GET  /nodes
+#   GET  /splat_regions      -> GET  /splat_nodes
+#   GET  /regions/{id}       -> GET  /nodes/{node_id}
+#   GET  /regions/{id}/model_path -> GET /nodes/{node_id}/model_path
+#
+# The one behaviour with no equivalent is POST /regions with no polygon, which
+# created a named region with a NULL boundary. osm.nodes.geom is NOT NULL, and
+# the frontend already refused that path (Upload.jsx: "Both types now need a
+# geometry"), so nothing is left to migrate.
 
 
 # ---------------------------------------------------------------------------
@@ -521,8 +419,7 @@ async def get_region_model_path(id: str, session: SessionDep):
 # ---------------------------------------------------------------------------
 
 class CreateJobRequest(BaseModel):
-    target_type: str          # "node" | "region"
-    target_id: str            # OSMNode.node_id (as str) or Region.id
+    node_id: int              # osm.nodes.node_id, point or area alike
     filenames: list[str]      # photo filenames the client will upload
     # Accepted for backwards compatibility, but no longer gates any work: the
     # mesh is what GS2Mesh's pipeline is *for* — the splat is an intermediate on
@@ -546,8 +443,6 @@ class WebhookRequest(BaseModel):
 @app.post("/jobs", dependencies=[RequireUser])
 async def create_job(body: CreateJobRequest, session: SessionDep):
     """Create a job and hand back presigned PUT URLs to upload the photos to R2."""
-    if body.target_type not in ("node", "region"):
-        raise HTTPException(status_code=400, detail="target_type must be 'node' or 'region'")
     if not body.filenames:
         raise HTTPException(status_code=400, detail="filenames must not be empty")
 
@@ -557,8 +452,7 @@ async def create_job(body: CreateJobRequest, session: SessionDep):
     job = Job(
         id=job_id,
         status="pending",
-        target_type=body.target_type,
-        target_id=body.target_id,
+        node_id=body.node_id,
         input_prefix=input_prefix,
         want_mesh=body.want_mesh,
     )
@@ -571,21 +465,15 @@ async def create_job(body: CreateJobRequest, session: SessionDep):
     return {"job_id": job_id, "input_prefix": input_prefix, "upload_urls": upload_urls}
 
 
-def _job_target(job: Job, session: Session) -> OSMNode | Region | None:
-    """The node or region a job's artifacts get attached to."""
-    if job.target_type == "node":
-        return session.get(OSMNode, int(job.target_id))
-    return session.get(Region, job.target_id)
+def _job_target(job: Job, session: Session) -> OSMNode | None:
+    """The node a job's artifacts get attached to."""
+    return session.get(OSMNode, job.node_id)
 
 
 def _target_name(job: Job, session: Session) -> str | None:
-    """The display name of a job's node/region, used to name the output splat."""
+    """The display name of a job's node, used to name the output splat."""
     target = _job_target(job, session)
-    if not target:
-        return None
-    if job.target_type == "node":
-        return (target.tags or {}).get("name")
-    return target.name
+    return target.name if target else None
 
 
 def _spawn_gs2mesh_job(job: Job, session: Session) -> None:
@@ -658,8 +546,7 @@ async def get_job(job_id: str, session: SessionDep):
         # pass, so there is no longer a window where one is servable and the
         # other is not.
         "status": job.status,
-        "target_type": job.target_type,
-        "target_id": job.target_id,
+        "node_id": job.node_id,
         "output_key": job.output_key,
         "error": job.error,
         # Vestigial: every job produces a mesh now. Kept in the response so

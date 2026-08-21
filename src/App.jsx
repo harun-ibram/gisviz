@@ -7,15 +7,16 @@ import Upload from './components/Upload.jsx'
 import Nodes from './components/Nodes.jsx'
 import { SplatLibraryProvider } from './hooks/SplatLibraryProvider.jsx'
 import { useSplatLibrary } from './hooks/useSplatLibrary.js'
+import { isAreaNode } from './utils.jsx'
 import { AuthProvider } from './hooks/AuthProvider.jsx'
 import { GisLibraryProvider } from './hooks/GisLibraryProvider.jsx'
 import { useGisLibrary } from './hooks/useGisLibrary.js'
 import AuthCorner from './components/auth/AuthCorner.jsx'
-import { IconLogo, IconRows, IconSearch, IconVisualizer, IconNode, IconRegion, IconUpload, IconLayers } from './components/icons.jsx'
+import { IconLogo, IconRows, IconSearch, IconVisualizer, IconNode, IconArea, IconUpload, IconLayers } from './components/icons.jsx'
 import { HeaderSearchProvider } from './hooks/HeaderSearchProvider.jsx'
 import { useHeaderSearch } from './hooks/useHeaderSearch.js'
 import { Analytics } from '@vercel/analytics/react'
-import Regions from './components/Regions.jsx'
+import Areas from './components/Areas.jsx'
 
 // Lazy so Leaflet and the GIS page stay out of the Home/Viewer chunk.
 const GisPage = lazy(() => import('./components/gis/GisPage.jsx'))
@@ -34,9 +35,9 @@ const SECTIONS = [
         end: true,
         label: 'Library',
         Icon: IconRows,
-        count: ({ nodes, regions }) => nodes.length + regions.length,
+        count: ({ nodes }) => nodes.length,
         badge: (value) => `${value} splats active`,
-        search: 'Search scenes, regions, or nodes…',
+        search: 'Search scenes, points, or areas…',
     },
     {
         path: '/viewer',
@@ -64,12 +65,14 @@ const SECTIONS = [
         search: 'Search nodes…',
     },
     {
-        path: '/regions',
-        label: 'Regions',
-        Icon: IconRegion,
-        count: ({ allRegions }) => allRegions.length,
-        badge: (value) => `${value} regions`,
-        search: 'Search regions…',
+        // Areas are nodes too — the polygon subset of the section above, not a
+        // separate kind of thing.
+        path: '/areas',
+        label: 'Areas',
+        Icon: IconArea,
+        count: ({ allNodes }) => allNodes.filter(isAreaNode).length,
+        badge: (value) => `${value} areas`,
+        search: 'Search areas…',
     },
 ]
 
@@ -77,10 +80,10 @@ const railLinkClass = ({ isActive }) => `gv-rail-link${isActive ? ' gv-rail-link
 
 /** Everything the section `count`/`badge` callbacks can read. */
 function useLibraryCounts() {
-    const { nodes, regions, allNodes, allRegions } = useSplatLibrary()
+    const { nodes, allNodes } = useSplatLibrary()
     const { layers } = useGisLibrary()
 
-    return { nodes, regions, allNodes, allRegions, layers }
+    return { nodes, allNodes, layers }
 }
 
 function Rail() {
@@ -127,7 +130,7 @@ function Header() {
         .filter((entry) => (entry.end ? pathname === entry.path : pathname.startsWith(entry.path)))
         .sort((a, b) => b.path.length - a.path.length)[0] ?? SECTIONS[0]
 
-    const total = counts.nodes.length + counts.regions.length
+    const total = counts.nodes.length
     const badge = section.badge
         ? section.badge(section.count(counts))
         : `${total} splats active`
@@ -194,7 +197,7 @@ function App() {
                                                 )}
                                             />
                                             <Route path="/nodes" element={<Nodes />} />
-                                            <Route path="/regions" element={<Regions />} />
+                                            <Route path="/areas" element={<Areas />} />
                                         </Routes>
                                     </main>
                                 </div>

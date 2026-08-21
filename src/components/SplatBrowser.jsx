@@ -3,11 +3,11 @@ import { Link } from 'react-router-dom'
 import { useHeaderSearch } from '../hooks/useHeaderSearch.js'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
 import { getFileName } from '../utils.jsx'
-import { IconArrowRight, IconDownload, IconNode, IconRegion } from './icons.jsx'
+import { IconArrowRight, IconDownload, IconNode, IconArea } from './icons.jsx'
 
 /**
  * The library view: a flat list of splats on the left, the selected one written
- * out on the right. Shared by /, /nodes and /regions — those differ only in
+ * out on the right. Shared by /, /nodes and /areas — those differ only in
  * which groups they hand in, so the filtering, the selection and the detail
  * panel are all built once, here.
  *
@@ -32,7 +32,7 @@ const hueFor = (name) => {
 
 /** A sentence built from the record itself — nothing here is decoration. */
 const describe = (item) => {
-    const shape = item.type === 'Region'
+    const shape = item.type === 'Area'
         ? `Outline of ${item.vertexCount} vertice${item.vertexCount === 1 ? '' : 's'}`
         : 'Single capture position'
     const where = item.compass ? `centred at ${item.coords}` : 'with no geometry on record'
@@ -52,7 +52,7 @@ export function SplatRow({ item, active, onSelect }) {
             onClick={onSelect}
         >
             <span className="gv-lib-thumb" style={{ '--gv-thumb-hue': hueFor(item.name) }}>
-                {item.type === 'Node' ? <IconNode size={22} /> : <IconRegion size={22} />}
+                {item.type === 'Point' ? <IconNode size={22} /> : <IconArea size={22} />}
             </span>
 
             <span className="gv-lib-row-main">
@@ -162,10 +162,10 @@ function DetailPanel({ item, loading }) {
 
             <div className="gv-stat-grid">
                 <div className="gv-stat">
-                    {/* A region has corners; a node is one position, and
+                    {/* An area has corners; a point is one position, and
                         calling that "1 vertex" reads like a broken outline. */}
                     <span className="gv-stat-label">
-                        {item.type === 'Region' ? 'Vertices' : 'Positions'}
+                        {item.type === 'Area' ? 'Vertices' : 'Positions'}
                     </span>
                     <span className="gv-stat-value">{item.vertexCount}</span>
                 </div>

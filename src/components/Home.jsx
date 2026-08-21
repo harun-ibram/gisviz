@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { useSplatLibrary } from '../hooks/useSplatLibrary.js'
-import { getFileName } from '../utils.jsx'
+import { getNodeName, isAreaNode } from '../utils.jsx'
 import { decorateSplat } from './libraryUtils.jsx'
 import SplatBrowser from './SplatBrowser.jsx'
 
@@ -9,40 +9,33 @@ import SplatBrowser from './SplatBrowser.jsx'
 export { SplatRow } from './SplatBrowser.jsx'
 
 function Home() {
-    const { nodes, regions, error, loading } = useSplatLibrary()
+    const { nodes, error, loading } = useSplatLibrary()
 
     useEffect(() => {
         document.title = 'Library'
     }, [])
 
-    const decoratedNodes = useMemo(
-        () => nodes.map((node) => decorateSplat('Node', {
+    // One list from one endpoint. Nodes and regions were merged into a single
+    // table, so what used to be two groups fed by /splat_nodes and
+    // /splat_regions is now one list split by geometry: a node carrying a
+    // Polygon is what used to be a region.
+    const decorated = useMemo(
+        () => nodes.map((node) => decorateSplat(isAreaNode(node) ? 'Area' : 'Point', {
             key: `node-${node.node_id}`,
             id: node.node_id,
-            name: node.model_path ? getFileName(node.model_path) : `Node ${node.node_id}`,
+            name: getNodeName(node),
             modelPath: node.model_path,
             geom: node.geom,
         })),
         [nodes],
     )
 
-    const decoratedRegions = useMemo(
-        () => regions.map((region) => decorateSplat('Region', {
-            key: `region-${region.id}`,
-            id: region.id,
-            name: region.name,
-            modelPath: region.model_path,
-            geom: region.geom,
-        })),
-        [regions],
-    )
-
     const groups = useMemo(
         () => [
-            { id: 'nodes', label: 'Nodes', items: decoratedNodes },
-            { id: 'regions', label: 'Regions', items: decoratedRegions },
+            { id: 'points', label: 'Points', items: decorated.filter((item) => item.type === 'Point') },
+            { id: 'areas', label: 'Areas', items: decorated.filter((item) => item.type === 'Area') },
         ],
-        [decoratedNodes, decoratedRegions],
+        [decorated],
     )
 
     return <SplatBrowser groups={groups} loading={loading} error={error} />

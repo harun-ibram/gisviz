@@ -3,11 +3,12 @@ import { SplatLibraryContext } from './splatLibraryContext.js'
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
 
+// Two fetches, not four: /regions and /splat_regions are gone, because a region
+// was a node with an area and osm.nodes now holds both shapes. Consumers that
+// used to read `regions` filter `nodes` with isAreaNode instead.
 export function SplatLibraryProvider({ children }) {
     const [nodes, setNodes] = useState([])
     const [allNodes, setAllNodes] = useState([])
-    const [regions, setRegions] = useState([])
-    const [allRegions, setAllRegions] = useState([])
     const [error, setError] = useState('')
     const [loading, setLoading] = useState(true)
 
@@ -16,22 +17,18 @@ export function SplatLibraryProvider({ children }) {
 
         const loadResults = async () => {
             try {
-                const [nodesResponse, regionsResponse, allNodesResponse, allRegionsResponse] = await Promise.all([
+                const [nodesResponse, allNodesResponse] = await Promise.all([
                     fetch(`${apiBaseUrl}/splat_nodes`),
-                    fetch(`${apiBaseUrl}/splat_regions`),
-                    fetch(`${apiBaseUrl}/nodes`),
-                    fetch(`${apiBaseUrl}/regions`)
+                    fetch(`${apiBaseUrl}/nodes`)
                 ])
 
-                if (!nodesResponse.ok || !regionsResponse.ok || !allNodesResponse.ok || !allRegionsResponse.ok) {
+                if (!nodesResponse.ok || !allNodesResponse.ok) {
                     throw new Error('Unable to load results from the backend.')
                 }
 
-                const [nodesData, regionsData, allNodesData, allRegionsData] = await Promise.all([
+                const [nodesData, allNodesData] = await Promise.all([
                     nodesResponse.json(),
-                    regionsResponse.json(),
-                    allNodesResponse.json(),
-                    allRegionsResponse.json()
+                    allNodesResponse.json()
                 ])
 
                 if (!active) {
@@ -39,9 +36,7 @@ export function SplatLibraryProvider({ children }) {
                 }
 
                 setNodes(nodesData)
-                setRegions(regionsData)
                 setAllNodes(allNodesData)
-                setAllRegions(allRegionsData)
                 setError('')
             } catch (loadError) {
                 if (!active) {
@@ -64,7 +59,7 @@ export function SplatLibraryProvider({ children }) {
     }, [])
 
     return (
-        <SplatLibraryContext.Provider value={{ nodes, regions, error, loading, apiBaseUrl, allNodes, allRegions }}>
+        <SplatLibraryContext.Provider value={{ nodes, error, loading, apiBaseUrl, allNodes }}>
             {children}
         </SplatLibraryContext.Provider>
     )

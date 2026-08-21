@@ -10,7 +10,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
 import SplatMap from './SplatMap.jsx'
 import useDragSize from '../hooks/useDragSize.js'
-import { getFileExtension, getFileName } from '../utils.jsx'
+import { getFileExtension, getFileName, isAreaNode } from '../utils.jsx'
 import { IconClose, IconDownload, IconMap, IconMinus, IconPlus, IconUpload } from './icons.jsx'
 
 // Where the splat is parked and where the camera starts. Zoom is measured
@@ -360,7 +360,7 @@ const isTypingTarget = (target) =>
   function SplatViewer() {
     const location = useLocation()
     // Already fetched app-wide, so the drawn outline costs no extra request.
-    const { allNodes, allRegions } = useSplatLibrary()
+    const { allNodes } = useSplatLibrary()
     const stageRef = useRef(null)
     const sceneRef = useRef(null)
     const rendererRef = useRef(null)
@@ -1047,28 +1047,24 @@ const isTypingTarget = (target) =>
     }, [])
 
     // The outline of the splat currently open, if its target has one. No new
-    // endpoint: the library context already holds every node and region, so the
-    // target is found by matching model_path against the path we were navigated
-    // with.
+    // endpoint: the library context already holds every node, so the target is
+    // found by matching model_path against the path we were navigated with.
+    //
+    // One lookup rather than two, now that an outline is just a node whose
+    // geometry is an area. source === 'drawn' keeps imported administrative
+    // boundaries out: one county would blow the scene radius out to tens of
+    // kilometres and put the camera in orbit, which reads as a broken feature.
     const drawnFeatures = useMemo(() => {
       const modelPath = location.state?.modelPath
       if (!modelPath) return []
 
       const node = (allNodes ?? []).find(
-        (entry) => entry.model_path === modelPath && entry.footprint,
+        (entry) => entry.model_path === modelPath
+          && isAreaNode(entry)
+          && entry.source === 'drawn',
       )
-      if (node) {
-        return [{ geometry: node.footprint }].filter(withinSizeCap)
-      }
-
-      const region = (allRegions ?? []).find(
-        // source === 'drawn' keeps imported administrative boundaries out: one
-        // county would blow the scene radius out to tens of kilometres and put
-        // the camera in orbit, which reads as a broken feature.
-        (entry) => entry.model_path === modelPath && entry.geom && entry.source === 'drawn',
-      )
-      return region ? [{ geometry: region.geom }].filter(withinSizeCap) : []
-    }, [allNodes, allRegions, location.state])
+      return node ? [{ geometry: node.geom }].filter(withinSizeCap) : []
+    }, [allNodes, location.state])
 
     // Read inside the fetch callback, which would otherwise close over the
     // value from the render that started the request.

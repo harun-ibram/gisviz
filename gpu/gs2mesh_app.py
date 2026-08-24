@@ -95,6 +95,7 @@ image = (
         "CXX": "g++",
         "FORCE_CUDA": "1",
         "TORCH_CUDA_ARCH_LIST": CUDA_ARCHS_TORCH,
+        "CUDA_LAUNCH_BLOCKING": "1"
     })
     # ---------------------------------------------------------------------
     # COLMAP, built from source with CUDA.
